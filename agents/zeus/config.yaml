@@ -1,0 +1,5 @@
+platform_toolsets:
+  cli: '["hermes-cli","web","file","terminal"]'
+toolsets: '["web", "file", "terminal"]'
+agent:
+  max_turns: 200
