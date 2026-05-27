@@ -1,26 +1,29 @@
 import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { query } from "@/lib/db";
 
 export async function PATCH(
-  request: NextRequest,
+  _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const { id } = await params;
 
-    const todo = await prisma.todo.findUnique({ where: { id } });
-    if (!todo) {
+    const rows = await query(
+      "SELECT id, title, completed, created_at FROM todos WHERE id = $1",
+      [id]
+    );
+
+    if (!rows[0]) {
       return NextResponse.json({ error: "Todo not found" }, { status: 404 });
     }
 
-    const updated = await prisma.todo.update({
-      where: { id },
-      data: { completed: !todo.completed },
-    });
+    const result = await query(
+      "UPDATE todos SET completed = $1 WHERE id = $2 RETURNING id, title, completed, created_at",
+      [!rows[0].completed, id]
+    );
 
-    return NextResponse.json(updated);
+    return NextResponse.json(result[0]);
   } catch (error) {
-    console.error("PATCH /api/todos/[id] error:", error);
     return NextResponse.json(
       { error: "Failed to update todo" },
       { status: 500 }
@@ -29,22 +32,14 @@ export async function PATCH(
 }
 
 export async function DELETE(
-  request: NextRequest,
+  _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const { id } = await params;
-
-    const todo = await prisma.todo.findUnique({ where: { id } });
-    if (!todo) {
-      return NextResponse.json({ error: "Todo not found" }, { status: 404 });
-    }
-
-    await prisma.todo.delete({ where: { id } });
-
+    await query("DELETE FROM todos WHERE id = $1", [id]);
     return NextResponse.json({ success: true });
   } catch (error) {
-    console.error("DELETE /api/todos/[id] error:", error);
     return NextResponse.json(
       { error: "Failed to delete todo" },
       { status: 500 }
