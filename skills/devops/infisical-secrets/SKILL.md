@@ -1,0 +1,460 @@
+---
+name: infisical-secrets
+description: "Manage all secrets via Infisical — no local .env files. Base secrets in /, project secrets in /<project>, auto-synced across profiles."
+version: 2.2.0
+created_by: agent
+platforms: [linux, macos]
+metadata:
+  hermes:
+    tags: [infisical, secrets, credentials, security, env, profiles]
+    related_skills: [hermes-agent, kanban-multi-agent-setup]
+---
+
+# Infisical Secrets Management
+
+All secrets are managed through **Infisical** (cloud at app.infisical.com). No secrets are stored in local `.env` files on disk. Hermes reads them from Infisical at runtime.
+
+## Folder Structure
+
+```
+/                          ← Base secrets: shared credentials
+  ├── DEEPSEEK_API_KEY
+  ├── TELEGRAM_BOT_TOKEN
+  ├── WHATSAPP_* 
+  ├── EMAIL_*
+  ├── GITHUB_TOKEN
+  ├── VERCEL_TOKEN
+  ├── NEON_API_KEY
+  └── ... (anything multiple profiles/jobs need)
+
+/<project_name>            ← Project-specific secrets (created per project)
+  ├── DEEPSEEK_API_KEY     ← Copied from / if project needs it
+  ├── VERCEL_TOKEN         ← Copied from / if project needs it
+  ├── NEON_API_KEY         ← Copied from / if project needs it
+  ├── NEON_PROJECT_ID      ← Project-specific
+  └── ... (project-local secrets)
+```
+
+### Rules
+
+1. **Base `/`** — holds secrets that multiple profiles, cron jobs, or projects depend on. Created once, updated centrally.
+2. **`/<project_name>`** — created when starting work on a new project (e.g. `/todo-app`, `/hermes-agent`). Contains only the secrets that project actually needs.
+3. **Seeds from base** — when creating a project folder, copy the relevant base secrets into it so the project is self-contained and doesn't need base access at runtime.
+4. **No local `.env` files** — once a secret is in Infisical, delete its local `.env` copy. `.env` files that remain on disk are stale references only (for documentation), not live config.
+
+## Installation
+
+The apt package is stuck at an old version (0.38.0) and blocks writes. Install via npm:
+
+```bash
+npm install -g @infisical/cli
+# Verify:
+infisical --version
+# Expect v0.43+ (or latest)
+```
+
+For ARM64 (aarch64) Linux, this is the only reliable install method — the GitHub release tarball naming is inconsistent for ARM.
+
+## Authentication (Machine Identity)
+
+Authentication method hierarchy (prefer the first that fits your use case):
+
+| Method | Persistence | Best for |
+|--------|-------------|----------|
+| **Universal auth** (client ID + secret) | Auto-refreshing token, stored in `~/.infisical.json` | Long-running daemons, gateway |
+| **Token auth** (access token JWT) | 30-day TTL, must be re-created | Short-lived scripts, CI |
+| **Cloud IAM** (AWS/GCP/Azure) | Zero stored credentials | Cloud-hosted agents |
+
+### Universal auth (client ID + secret) — PREFERRED
+
+Login once — the session persists in `~/.infisical.json` and auto-refreshes:
+
+```bash
+infisical login --method=universal-auth \
+  --client-id=<CLIENT_ID> \
+  --client-secret=<CLIENT_SECRET> \
+  --silent
+```
+
+After login, all `infisical` commands use the stored session automatically — no need to pass env vars.
+
+**To get an access token from universal auth for ephemeral use:**
+```bash
+infisical login --method=universal-auth \
+  --client-id=<CLIENT_ID> \
+  --client-secret=<CLIENT_SECRET> \
+  --silent --plain
+# The last line of stdout is the JWT access token
+```
+
+### Token auth (access token JWT)
+
+Set the `INFISICAL_TOKEN` env var. No login needed:
+
+```bash
+export INFISICAL_TOKEN="eyJh..."   # Machine identity access token
+```
+
+**Pitfall:** Access tokens expire in 30 days. Create a new one from the Infisical dashboard when expired.
+
+The machine identity must have the Hermes project attached. Find the project ID:
+
+```bash
+curl -s -H "Authorization: Bearer $INFISICAL_TOKEN" \
+  "https://app.infisical.com/api/v1/projects"
+```
+
+Then pass `--projectId` for all commands.
+
+## Working with Secrets
+
+All commands need the project ID. Set it once or pass `--projectId` each time:
+
+```bash
+PROJECT_ID="24881f6a-bfc0-4f83-82df-d0fcc27e8dab"
+```
+
+### List secrets
+
+```bash
+INFISICAL_TOKEN=$TOKEN infisical secrets --projectId=$PROJECT_ID --path="/" --env=prod
+```
+
+### Get a single value
+
+```bash
+INFISICAL_TOKEN=$TOKEN infisical secrets get KEY --projectId=$PROJECT_ID --path="/" --env=prod --plain
+```
+
+### Set a secret (preferred: `--file` approach)
+
+The most reliable way to set secrets — especially ones with special characters — is to write a `.env` file and use `--file`:
+
+```bash
+# Write an env-formatted file with all secrets
+cat > /tmp/secrets.env << 'EOF'
+DATABASE_URL=postgresql://user:pass@host:5432/db?sslmode=require
+VERCEL_TOKEN=vcp_...
+EOF
+
+# Load them all at once
+INFISICAL_TOKEN=$TOKEN infisical secrets set \
+  --projectId=$PROJECT_ID --path="/" --env=prod \
+  --file=/tmp/secrets.env
+
+rm /tmp/secrets.env
+```
+
+### Set a secret (inline — simple values only)
+
+Works for short alphanumeric values without special chars:
+
+```bash
+INFISICAL_TOKEN=$TOKEN infisical secrets set \
+  --projectId=$PROJECT_ID --path="/" --env=prod \
+  "KEY=simple-value"
+```
+
+**CRITICAL PITFALL — @filepath is broken in CLI v0.43.x:** The `key=@/path/to/file` syntax **does NOT work** — it stores the literal string `@/tmp/val.txt` as the secret value instead of reading the file contents. Do NOT use `@filepath` syntax. Use `--file` instead.
+
+**Also:** The CLI rejects empty values with "ensure that each secret has a non-empty key and value". Skip keys with blank values rather than trying to set them.
+
+### Delete a secret
+
+```bash
+INFISICAL_TOKEN=$TOKEN infisical secrets delete --projectId=$PROJECT_ID --path="/" --env=prod KEY
+```
+
+## Creating a Project Folder
+
+**CRITICAL:** You CANNOT set secrets at a path that doesn't exist yet — `infisical secrets set --path=/todo-app` will fail with "Folder with path '/todo-app' was not found". Folders must be created first via the API, then secrets can be added.
+
+### Step 1: Create the folder via API
+
+```bash
+curl -s -X POST "https://app.infisical.com/api/v2/folders" \
+  -H "Authorization: Bearer $INFISICAL_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "projectId": "'"$PROJECT_ID"'",
+    "environment": "prod",
+    "name": "todo-app",
+    "path": "/"
+  }'
+```
+
+The response returns a `folder.id`. No CLI command exists for folder creation.
+
+### Step 2: Add project-specific secrets
+
+Use `--file` with an env-formatted file for all values:
+
+```bash
+# Write secrets to an env file, then load via --file
+cat > /tmp/project.env << 'EOF'
+NEON_PROJECT_ID=my-project
+DATABASE_URL=postgresql://user:pass@host:5432/db
+EOF
+
+INFISICAL_TOKEN=$TOKEN infisical secrets set \
+  --projectId=$PROJECT_ID --path="/todo-app" --env=prod \
+  --file=/tmp/project.env
+
+rm /tmp/project.env
+```
+
+### Step 3: Copy relevant base secrets into it
+
+```bash
+# Write all copied secrets to one env file, then upload at once
+cat > /tmp/copy.env << 'EOF'
+EOF
+
+for key in VERCEL_TOKEN GITHUB_TOKEN NEON_API_KEY; do
+  val=$(INFISICAL_TOKEN=$TOKEN infisical secrets get "$key" \
+    --projectId=$PROJECT_ID --path="/" --env=prod --plain)
+  if [ -n "$val" ]; then
+    # Use Python to safely append (avoids bash escaping issues)
+    python3 -c "
+import os
+key = '$key'
+val = '''$val'''
+with open('/tmp/copy.env', 'a') as f:
+    f.write(f'{key}={val}\n')
+"
+  fi
+done
+
+INFISICAL_TOKEN=$TOKEN infisical secrets set \
+  --projectId=$PROJECT_ID --path="/todo-app" --env=prod \
+  --file=/tmp/copy.env
+
+rm /tmp/copy.env
+```
+
+### Step 4: Update the profile's `.env` to point to the new path
+
+```bash
+echo "INFISICAL_PATH=/todo-app" >> ~/.hermes/profiles/zeus/.env
+```
+
+### From `execute_code` (Python)
+
+```python
+import subprocess, os, tempfile
+
+# 1. Create folder
+folder_data = json.dumps({
+    "projectId": PROJECT_ID,
+    "environment": "prod",
+    "name": "todo-app",
+    "path": "/"
+}).encode()
+req = urllib.request.Request(
+    "https://app.infisical.com/api/v2/folders",
+    data=folder_data,
+    headers={"Authorization": f"Bearer {inf_token}", "Content-Type": "application/json"}
+)
+urllib.request.urlopen(req)
+
+# 2. Set secrets via @filepath
+tf = tempfile.NamedTemporaryFile(mode='w', delete=False)
+tf.write(db_url)
+tf.close()
+subprocess.run([INF, "secrets", "set", f"--projectId={PROJECT_ID}",
+    "--path=/todo-app", "--env=prod", f"DATABASE_URL=@{tf.name}"])
+os.unlink(tf.name)
+```
+
+## Profile Integration (Zeus, Athena, etc.)
+
+Each Hermes profile's `.env` should contain ONLY metadata, never actual secrets:
+
+```bash
+# This file is managed by Infisical — do not edit directly
+INFISICAL_PROJECT_ID=24881f6a-bfc0-4f83-82df-d0fcc27e8dab
+INFISICAL_PATH=/
+INFISICAL_ENV=prod
+```
+
+### Primary Method: `infisical run` (secrets in memory, never on disk)
+
+Use `infisical run` to inject secrets as environment variables **directly into the process memory**. No `.env` file is written — secrets exist only in the Hermes process's memory and are gone when it exits.
+
+```bash
+# Start Hermes CLI with secrets injected
+INFISICAL_TOKEN=$TOKEN infisical run \
+  --projectId=24881f6a-bfc0-4f83-82df-d0fcc27e8dab \
+  --path=/ --env=prod -- \
+  hermes chat
+
+# Start gateway with secrets injected
+INFISICAL_TOKEN=$TOKEN infisical run \
+  --projectId=24881f6a-bfc0-4f83-82df-d0fcc27e8dab \
+  --path=/ --env=prod -- \
+  hermes gateway run
+```
+
+**Advantages:**
+- ✅ **Never touches disk** — no `.env` file is created or overwritten
+- ✅ **Process memory only** — container breach can't exfiltrate a secrets file
+- ✅ **Transient** — when process dies, env vars are gone
+- ✅ **No file dependencies** — works in any environment (containers, CI, bare metal)
+
+**Authentication for infisical run:**
+
+Set `INFISICAL_TOKEN` as an env var before calling `infisical run`:
+```bash
+export INFISICAL_TOKEN="eyJh..."   # Machine identity access token
+```
+
+For daemon processes (gateway), the `INFISICAL_TOKEN` itself must be stored somewhere. Options (ordered by security):
+1. **Cloud IAM** — authenticate via AWS/GCP/Azure metadata service (no stored token)
+2. **Systemd service EnvironmentFile** — readable only by root
+3. **Hermes config.yaml** — `hermes config set agent.env.INFISICAL_TOKEN <value>`
+
+### Alternative: Cron-refreshed .env (fallback)
+
+If `infisical run` isn't feasible for a specific use case, sync secrets to `.env` periodically:
+
+```bash
+INFISICAL_TOKEN=$TOKEN infisical export \
+  --projectId=24881f6a-bfc0-4f83-82df-d0fcc27e8dab \
+  --path=/ --env=prod --format=dotenv-export > ~/.hermes/.env
+```
+
+Run this as a cron job. Trade-off: secrets exist on disk between syncs.
+
+## Syncing Infisical Secrets to Vercel
+
+Single source of truth: secrets live in Infisical, and Vercel project env vars are synced from Infisical before each deploy. Never set Vercel env vars manually — the sync script does it.
+
+### Workflow
+
+```
+Infisical/(<project>)  ──sync──>  Vercel project env vars  ──use──>  Deploy preview
+       │                                  │
+   Manage here                      Read at build time
+```
+
+1. **Create a project folder** in Infisical (`/<project>`) with the secrets the Vercel project needs
+2. **Run the sync** before deploying — pushes Infisical secrets → Vercel project env vars
+3. **Deploy** — Vercel build/runtime picks up the synced env vars
+
+### Sync script
+
+```bash
+# Sync Infisical /<project> → Vercel project env vars
+# Args: $1 = Infisical path (e.g. /todo-app), $2 = Vercel env targets (e.g. preview,development)
+# Requires: INFISICAL_TOKEN, VERCEL_TOKEN in environment
+
+INFISICAL_PATH="${1:-/}"
+VERCEL_ENVS="${2:-preview,development}"
+PROJECT_ID="24881f6a-bfc0-4f83-82df-d0fcc27e8dab"
+VERCEL_PROJECT_ID="prj_ByBJItuj8gzffT4ZaKwKnBDCXSAY"
+
+# Get secrets from Infisical
+SECRETS_JSON=$(infisical secrets --projectId=$PROJECT_ID --path="$INFISICAL_PATH" --env=prod)
+
+# Parse and push each to Vercel
+infisical run --projectId=$PROJECT_ID --path="$INFISICAL_PATH" --env=prod -- \
+  bash -c "
+    for key in DATABASE_URL NEON_API_KEY DEEPSEEK_API_KEY; do
+      val=\"\${!key}\"
+      [ -n \"\$val\" ] && echo \"\$val\" | vercel env add \"\$key\" $VERCEL_ENVS --token=\$VERCEL_TOKEN --yes 2>/dev/null
+    done
+  "
+```
+
+### Vercel API (alternative to CLI)
+
+For bulk syncs, use the Vercel REST API directly:
+
+```bash
+# POST /v10/projects/{projectId}/env — upsert one env var
+curl -s -X POST "https://api.vercel.com/v10/projects/$VERCEL_PROJECT_ID/env" \
+  -H "Authorization: Bearer $VERCEL_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "key": "DATABASE_URL",
+    "value": "postgresql://...",
+    "target": ["preview", "development"],
+    "type": "plain"
+  }'
+```
+
+### Per-project pattern
+
+| Infisical path | Vercel project | Vercel project ID |
+|---|---|---|
+| `/` (base) | — | — |
+| `/todo-app` | todo-app | `prj_ByBJItuj8gzffT4ZaKwKnBDCXSAY` |
+| `/<new-project>` | <new-project> | (get from `.vercel/project.json`) |
+
+To add a new project: create its Infisical folder, copy base secrets into it, note the Vercel project ID from `.vercel/project.json`, then sync.
+
+See `references/vercel-env-sync.md` for the full script with error handling and dry-run mode.
+
+## Agent Profile Backup to Git
+
+Daily git-backed backup of agent profiles (SOUL.md, config) so state survives container restarts. The backup script copies `~/.hermes/profiles/<name>/` files to the project repo at `agents/<name>/`, then commits and pushes to GitHub.
+
+Key auth pattern: the git push runs inside `infisical run` with `GIT_ASKPASS` to authenticate using `GITHUB_TOKEN` from Infisical — no token ever touches disk.
+
+See `references/agent-backup.md` for the full script, setup, and adding new profiles.
+
+## Git Credential Integration
+
+When git needs to push/pull to GitHub, it needs `GITHUB_TOKEN`. With `infisical run`, the token is in the environment but not on disk — git can't read it directly.
+
+Use a **credential helper script** that reads `GITHUB_TOKEN` from the env:
+
+```bash
+# One-time setup:
+git config --global credential.helper /path/to/git-credential-env.sh
+rm -f ~/.git-credentials
+git remote set-url origin https://github.com/owner/repo.git
+```
+
+The script is at `scripts/git-credential-env.sh`. For non-interactive contexts (cron, CI), use `scripts/git-askpass.sh` with `GIT_ASKPASS` instead. See `references/git-credential-env.md` for full setup, verification, and troubleshooting.
+
+## Protected .env Files
+
+The root `~/.hermes/.env` is a protected system file — `write_file` and `terminal` both block modifications to it. To replace it:
+
+1. Upload all secrets to Infisical first (via `execute_code` with `INFISICAL_TOKEN` env var)
+2. Use the terminal with explicit user approval to rewrite the file:
+
+```bash
+cat > ~/.hermes/.env << 'EOF'
+INFISICAL_PROJECT_ID=...
+INFISICAL_PATH=/
+INFISICAL_ENV=prod
+EOF
+```
+
+The protection exists because `.env` usually contains live credentials — once migrated, the user must explicitly approve the replacement.
+
+## Workflow for Adding a New Secret
+
+1. Add it to Infisical at `/` if it's a shared credential
+2. Copy it to each project folder (`/<project>`) that needs it
+3. Delete the local `.env` copy if one exists
+4. Update this skill if it's a new category of secret (e.g. a new provider token)
+
+## Pitfalls
+
+- **Install via npm, not apt.** The apt package (v0.38.0) is too old and blocks writes with "Update Required". npm gives v0.43+.
+- **The CLI requires `--projectId`** when using machine identity (env var or token). Without it, you get "Project ID is required when using machine identity".
+- **`@filepath` stores the literal path** if the file doesn't exist or the path is malformed. Always verify the value was stored correctly with `infisical secrets get ... --plain`.
+- **Empty values** are rejected with "ensure that each secret has a none empty key and value". Skip empty secrets rather than trying to store them.
+- **Access tokens expire in 30 days.** Machine identity access tokens have a 30-day TTL. For long-running daemons, use universal auth (client ID + secret, auto-refreshing) or cloud IAM (no token to rotate).
+- **Use `execute_code` for bulk uploads, not shell.** JWT tokens and secrets with special characters (`@`, `/`, `+`, `=`) break bash quoting. Use Python `subprocess.run()` inside `execute_code` to pass secrets as env vars and temp files.
+- **Don't commit `.infisical.json`** — add to `.gitignore`
+- **Don't echo secret values** in terminal or logs — mask them
+- **Folder paths are case-sensitive**: `/TodoApp` ≠ `/todo-app`
+- **Environment matters**: secrets in `dev` are invisible to `prod` and vice versa
+- **The `INFISICAL_TOKEN` env var approach** is simpler than `infisical login` for automation — no persistent session files, just an env var
+- **ARM64 Linux**: the apt repo and GitHub release tarballs both have issues on aarch64. npm install `@infisical/cli` is the known-good path.
+- When copying secrets between folders, the `--plain` flag suppresses the "NEW/SECRET" table format — essential for scripting
+- If a profile's `.env` is empty, Hermes may fail to start. Always keep at least `INFISICAL_PROJECT_ID`, `INFISICAL_PATH`, and `INFISICAL_ENV` in the profile `.env` to signal "managed by Infisical"
