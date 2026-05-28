@@ -1,7 +1,7 @@
 ---
 name: infisical-secrets
 description: "Manage all secrets via Infisical — no local .env files. Base secrets in /, project secrets in /<project>, auto-synced across profiles."
-version: 2.2.0
+version: 2.3.0
 created_by: agent
 platforms: [linux, macos]
 metadata:
@@ -77,6 +77,8 @@ infisical login --method=universal-auth \
 ```
 
 After login, all `infisical` commands use the stored session automatically — no need to pass env vars.
+
+**Pitfall — session may not persist on all setups.** On some systems (notably Linux without a persistent credential store), `infisical login --silent` succeeds and returns a token but does NOT create `~/.infisical.json`. The next `infisical secrets` command fails with "No valid login session found, triggering login flow". Workaround: always use `--silent --plain` to capture the token from stdout, then pass it via `INFISICAL_TOKEN` env var or embed it in a wrapper script (see "Zero-Disk Gateway" below).
 
 **To get an access token from universal auth for ephemeral use:**
 ```bash
@@ -313,6 +315,111 @@ For daemon processes (gateway), the `INFISICAL_TOKEN` itself must be stored some
 2. **Systemd service EnvironmentFile** — readable only by root
 3. **Hermes config.yaml** — `hermes config set agent.env.INFISICAL_TOKEN <value>`
 
+### Systemd Gateway Unit Migration
+
+When migrating from a direct `.env`-based gateway to Infisical-injected secrets, you MUST update the systemd unit **before** stubbing the `.env` file. There are two approaches depending on how zero-disk you need to be.
+
+#### Approach A: tmpfs Wrapper with Universal Auth (Zero-Disk — PREFERRED)
+
+Avoids storing any INFISICAL_TOKEN or credentials on persistent disk. The wrapper script lives in `/dev/shm` (tmpfs, RAM-backed, wiped on reboot) and authenticates to Infisical via universal auth at every startup.
+
+**Warning:** `infisical login --silent` may not persist the session to `~/.infisical.json` on all setups. Always use the `--silent --plain` flag and capture the token from stdout.
+
+Create the wrapper at `/dev/shm/hermes-gateway/gateway.sh`:
+
+```bash
+mkdir -p /dev/shm/hermes-gateway && chmod 700 /dev/shm/hermes-gateway
+```
+
+```bash
+cat > /dev/shm/hermes-gateway/gateway.sh << 'GATEWAY_EOF'
+#!/bin/bash
+set -euo pipefail
+
+CLIENT_ID="<your-universal-auth-client-id>"
+CLIENT_SECRET="<your-universal-auth-client-secret>"
+PROJECT_ID="24881f6a-bfc0-4f83-82df-d0fcc27e8dab"
+
+AUTH_OUTPUT=$(infisical login \
+  --method=universal-auth \
+  --client-id="$CLIENT_ID" \
+  --client-secret="$CLIENT_SECRET" \
+  --silent --plain 2>/dev/null)
+INFISICAL_TOKEN=$(echo "$AUTH_OUTPUT" | tail -1)
+
+if [ -z "$INFISICAL_TOKEN" ]; then
+  echo "FATAL: Infisical auth failed" >&2
+  exit 1
+fi
+export INFISICAL_TOKEN
+
+exec infisical run \
+  --projectId="$PROJECT_ID" \
+  --path=/ \
+  --env=prod -- \
+  python -m hermes_cli.main gateway run --replace
+GATEWAY_EOF
+
+chmod 500 /dev/shm/hermes-gateway/gateway.sh
+```
+
+Update the systemd unit's ExecStart to point at this wrapper:
+
+```ini
+[Service]
+ExecStart=
+ExecStart=/dev/shm/hermes-gateway/gateway.sh
+```
+
+```bash
+systemctl --user daemon-reload
+systemctl --user restart hermes-gateway.service
+```
+
+**Note:** If the container reboots, `/dev/shm` is wiped and the wrapper is gone. Recreate it after a restart before the gateway can work again.
+
+#### Approach B: Systemd Environment with INFISICAL_TOKEN (Simpler, Token on Disk)
+
+Store the machine identity access token in the systemd unit's Environment. The token is visible in the systemd unit file on disk but expires in 30 days.
+
+```bash
+systemctl --user edit hermes-gateway.service
+```
+
+Paste this override:
+
+```ini
+[Service]
+ExecStart=
+ExecStart=/home/ubuntu/.nvm/versions/node/v22.22.3/bin/infisical run \
+  --projectId=24881f6a-bfc0-4f83-82df-d0fcc27e8dab \
+  --path=/ --env=prod -- \
+  /home/ubuntu/.hermes/hermes-agent/venv/bin/python \
+  -m hermes_cli.main gateway run --replace
+Environment=INFISICAL_TOKEN=<your-machine-identity-token>
+```
+
+Then reload and restart:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user restart hermes-gateway.service
+# Verify:
+hermes gateway status
+grep "platform" ~/.hermes/logs/gateway.log | tail -5
+```
+
+**If the gateway is already broken** you can test with a one-shot command before updating the unit:
+
+```bash
+export INFISICAL_TOKEN="eyJ..."
+infisical run --projectId=24881f6a-bfc0-4f83-82df-d0fcc27e8dab \
+  --path=/ --env=prod -- \
+  hermes gateway run --replace
+```
+
+**WhatsApp bridge note:** The bridge process runs as a separate Node.js daemon (`node bridge.js --port 3000 --session ...`). It keeps its own credentials in `~/.hermes/whatsapp/session/creds.json` and is unaffected by the .env change. When the gateway reconnects under `infisical run`, it finds the bridge already healthy on port 3000. No re-pairing is needed after a gateway migration — the WhatsApp session survives independently.
+
 ### Alternative: Cron-refreshed .env (fallback)
 
 If `infisical run` isn't feasible for a specific use case, sync secrets to `.env` periodically:
@@ -368,20 +475,30 @@ infisical run --projectId=$PROJECT_ID --path="$INFISICAL_PATH" --env=prod -- \
 
 ### Vercel API (alternative to CLI)
 
-For bulk syncs, use the Vercel REST API directly:
+For bulk syncs, use the Vercel REST API directly.
+
+**⚠️ Vercel does NOT upsert env vars.** POST with an existing key returns 400 "duplicate key". Always DELETE the old env var first:
 
 ```bash
-# POST /v10/projects/{projectId}/env — upsert one env var
+# 1. List current env vars and find the one to replace
+curl -s "https://api.vercel.com/v9/projects/$VERCEL_PROJECT_ID/env" \
+  -H "Authorization: Bearer $VERCEL_TOKEN"
+# 2. Delete the old one
+curl -s -X DELETE "https://api.vercel.com/v9/projects/$VERCEL_PROJECT_ID/env/$ENV_VAR_ID" \
+  -H "Authorization: Bearer $VERCEL_TOKEN"
+# 3. Create the new one
 curl -s -X POST "https://api.vercel.com/v10/projects/$VERCEL_PROJECT_ID/env" \
-  -H "Authorization: Bearer $VERCEL_TOKEN" \
+  -H "Authorization: Bearer *** \
   -H "Content-Type: application/json" \
   -d '{
     "key": "DATABASE_URL",
     "value": "postgresql://...",
-    "target": ["preview", "development"],
+    "target": ["preview", "development", "production"],
     "type": "plain"
   }'
 ```
+
+When a secret key existed in multiple targets (e.g. "preview" and "development" as separate env vars), you'll find multiple entries to delete. Vercel exposes one env per target — delete all before setting a unified value with all targets.
 
 ### Per-project pattern
 
@@ -444,6 +561,20 @@ The protection exists because `.env` usually contains live credentials — once 
 
 ## Pitfalls
 
+### CRITICAL: Stubbing `.env` bricks the gateway if systemd unit is not updated
+
+Replacing `~/.hermes/.env` with an Infisical-only stub **instantly kills all messaging platforms** (Telegram, WhatsApp, etc.) unless the systemd gateway unit also runs under `infisical run`. The default systemd unit runs the gateway directly:
+
+```
+ExecStart=...python -m hermes_cli.main gateway run --replace
+```
+
+This bypasses Infisical entirely — the gateway process never sees the platform credentials. The symptom is "No messaging platforms enabled" in the gateway log despite the service showing "active (running)".
+
+**Always update the systemd unit BEFORE or simultaneously with stubbing `.env`.** See "Systemd Gateway Unit Migration" below for the exact override command.
+
+**If already broken:** The WhatsApp bridge Node.js process and its session data (`~/.hermes/whatsapp/session/`) survive independently — no re-pairing needed. Two recovery paths: (a) update the systemd unit to wrap with `infisical run`, or (b) temporarily restore `.env` with credentials and restart the gateway. Diagnosis: `hermes gateway status` + `grep 'No messaging platforms enabled' ~/.hermes/logs/gateway.log`.
+
 - **Install via npm, not apt.** The apt package (v0.38.0) is too old and blocks writes with "Update Required". npm gives v0.43+.
 - **The CLI requires `--projectId`** when using machine identity (env var or token). Without it, you get "Project ID is required when using machine identity".
 - **`@filepath` stores the literal path** if the file doesn't exist or the path is malformed. Always verify the value was stored correctly with `infisical secrets get ... --plain`.
@@ -458,3 +589,11 @@ The protection exists because `.env` usually contains live credentials — once 
 - **ARM64 Linux**: the apt repo and GitHub release tarballs both have issues on aarch64. npm install `@infisical/cli` is the known-good path.
 - When copying secrets between folders, the `--plain` flag suppresses the "NEW/SECRET" table format — essential for scripting
 - If a profile's `.env` is empty, Hermes may fail to start. Always keep at least `INFISICAL_PROJECT_ID`, `INFISICAL_PATH`, and `INFISICAL_ENV` in the profile `.env` to signal "managed by Infisical"
+
+## References
+
+- `references/gateway-tmpfs-wrapper.md` — Zero-disk gateway wrapper using tmpfs + universal auth (wrapper script, pitfalls, recovery from bricked platforms)
+- `references/neon-password-reset.md` — Reset expired/stale Neon DB passwords and update Infisical
+- `references/vercel-env-sync.md` — Sync Infisical secrets to Vercel project env vars
+- `references/git-credential-env.md` — Git credential helper setup for Infisical-managed tokens
+- `references/agent-backup.md` — Daily git backup of agent profiles

@@ -64,7 +64,7 @@ if [ -d "$SCRIPTS_DST" ]; then
 fi
 
 # Commit and push
-if git diff --quiet && git diff --cached --quiet; then
+if git diff --quiet && git diff --cached --quiet && [ -z "$(git ls-files --others --exclude-standard)" ]; then
     echo "No changes to commit"
 else
     git add agents/ skills/ scripts/
