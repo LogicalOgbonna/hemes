@@ -1,7 +1,7 @@
 ---
 name: mercator-procurement-agent
 description: "Create a procurement & negotiation agent profile (Mercator) for P2P marketplace purchases via Kanban board."
-version: 1.3.0
+version: 1.7.0
 author: Hermes Agent
 tags: [procurement, negotiation, kleinanzeigen, marketplace, agent]
 ---
@@ -82,10 +82,30 @@ kanban_create(
 - **Forgotten stolen check** — always verify serial against theft database and request serial photo.
 - **Forgotten keys/charger inquiry** — not all sellers include these. Must be explicitly asked.
 - **Daytime-only responses** — Kleinanzeigen sellers reply 08:00-22:00. Messages sent at night are queued, not ignored. Don't block the task — it will unblock naturally when responses arrive.
+- **Strict mode violation when clicking conversation images** — On the messages page, clicking `img[alt*="listing title"]` fails with `strict mode violation` when two images on the page share the same alt text (e.g. listing thumbnail in the sidebar + the same thumbnail in the message list). **Fix:** Use the Camofox `/evaluate` endpoint to run JavaScript directly:
+  ```python
+  # Instead of clicking by selector (fails with strict mode):
+  # POST /tabs/{tabId}/evaluate
+  # {"userId": "mercator", "expression": "document.querySelector('article a[href*=\"<listingId>\"]')?.click()"}
+  ```
+  Find the listing ID from the URL of the listing (e.g. `3375116866` from `/s-anzeige/smalo-lx2-.../3375116866-217-3522`). The `/evaluate` endpoint bypasses Playwright's strict mode entirely.
+  **Verification:** After clicking, the URL should include `?conversationId=<id>`. If it doesn't, the click didn't register — try `document.querySelectorAll('article img')` and pick by index.
+- **User contact info location** — When a seller requests your phone number or name, check `references/user-contact-info.md`. Also stored in memory and in Infisical under keys `MY_NAME`, `MY_EMAIL`, `MY_PHONE`, `MY_ADDRESS`. The user's Kleinanzeigen email is `arinze.devops@gmail.com` and phone is `+49 1523 5797306`.
 - **Dead eBay API** — eBay.de frequently blocks automation. Don't rely on eBay as a secondary marketplace for this user. Fall back to Kleinanzeigen only.
 - **Spec update during run** — if the user corrects specs mid-run (e.g. "e-bike not regular bike"), block the task, update the body, unblock. The agent restarts with the right context.
 - **Kanban DB status vs GitHub board status are separate** — the Hermes kanban DB (SQLite) and the GitHub Projects board have independent Status fields. Don't conflate them.
-- **Infisical export requires `--projectId`** with machine identity — the `INFISICAL_PROJECT_ID` env var is set to `24881f6a-bfc0-4f83-82df-d0fcc27e8dab` but the CLI does NOT read it automatically. Always pass `--projectId="$INFISICAL_PROJECT_ID"` explicitly: `infisical export --projectId="$INFISICAL_PROJECT_ID" --env=prod --format=json`.
+- **Cookie consent dialog returns on every session restart** — After the Camofox browser disconnects and a new tab is created, the Kleinanzeigen cookie consent dialog ("Willkommen bei Kleinanzeigen" with "Alle Cookies und Tracking akzeptieren") reappears. This dialog silently OVERLAYS all page interactions: the Camofox `/click` endpoint returns `{\"ok\":true}` but the click is intercepted by the dialog and NOTHING happens on the page underneath. Messages appear to send but remain in the textbox. The dialog is the #1 silent cause of "message sent" not actually working. **Always dismiss via evaluate BEFORE any page interaction:** `POST /tabs/{tabId}/evaluate {\"expression\": \"(()=>{const btns=document.querySelectorAll('button');for(const b of btns){if(b.textContent.includes('Alle akzeptieren')){b.click();return 'dismissed'}}return 'none';})()\"}`. Check the page snapshot for a `dialog` element with "Willkommen bei Kleinanzeigen" — if present, dismiss it first.
+
+- **Agent identity on marketplace platforms** — On Kleinanzeigen and similar P2P marketplaces, the agent presents as the user, NOT as itself. The user is **Arinze Ogbonna**, located in **Berlin, Germany**. Never say "I'm an AI agent", "I'm Hermes", or give the impression that the message comes from an autonomous system. Always write in first person as the user (e.g. "Hallo, ich heiße Arinze...", "Viele Grüße, Arinze"). Correct: "Ich bin Arinze aus Berlin." Wrong: "I am an AI agent located in Frankfurt." The user's personal info is in `references/user-contact-info.md` and in Infisical under keys `MY_NAME`, `MY_EMAIL`, `MY_PHONE`, `MY_ADDRESS`.
+- **✨ Always verify messages actually sent — don't trust the API response** — The Camofox `/click` and `/type` endpoints return `{"ok":true}` even when the message wasn't actually sent. The only reliable verification is to check the conversation thread after the send. See the "Verify Messages Sent" section below for the correct approach. A message that returned `ok: true` but didn't appear in the thread means the send button click was received by Playwright but the page's JavaScript handler didn't process it — you need the `dispatchEvent(new MouseEvent('click'))` technique documented in `references/kleinanzeigen-send-technique.md`.
+- **Conversation reordering** — After sending a message, the conversation moves to the top of the message list. Stored article indices become stale. Always re-fetch the article list after sending.
+- **When sellers counter at a price within the user's budget** — accept it. Don't keep pushing. This session's user has a max budget of €700. Mike counter-offered at €500 and held firm. The right move was to accept, ask for address, and arrange pickup. Continuing to push would annoy the seller and lose the deal.
+
+- **Always verify which conversation is open before typing** — After opening a conversation by clicking an article heading or image, ALWAYS verify you're in the right conversation before typing. The most reliable check: look at the URL for `?conversationId=<id>`. If the URL doesn't have a conversationId, the click didn't register. Also check that the seller info (name, listing title) displayed in the detail pane matches the conversation you intended to message. Sending to the wrong conversation cannot be undone — messages are permanent on Kleinanzeigen.
+
+- **Multiple failed send attempts stack text in the textbox** — When the send button click silently fails (due to cookie dialog overlay or stale page state), the typed text stays in the textbox. Subsequent `type` calls append to existing text rather than replacing it. Always check the textbox value before typing: `document.getElementById('nachricht').value`. If non-empty, either retry the send (the text is already there) or refresh the page. After each send attempt, verify the conversation thread shows the new message before considering it sent.
+
+- **Conversation order flips after any message activity** — After you send a message, that conversation jumps to the top of the list. If you stored `document.querySelectorAll('article')[1]` as a reference before sending, it now points to a different conversation. The same happens when a seller replies — their conversation jumps to the top. Always re-query the article list by matching the seller's listing title rather than relying on a fixed index.
 
 ## Email Gateway Interference
 
@@ -181,7 +201,7 @@ After a Camofox server restart, persistent sessions may not survive. If you navi
    curl -X POST http://localhost:9377/tabs -d '{"userId":"mercator","url":"https://www.kleinanzeigen.de"}'
    ```
 
-3. **If still redirected to login**, re-authenticate via the three-stage Auth0 flow (see `camofox-browser-setup/references/kleinanzeigen-login.md`):
+3. **If still redirected to login**, re-authenticate via the three-stage Auth0 flow:
    - Email entry → "Weiter"
    - Password entry → "Einloggen"
    - MFA (SMS code) if enabled — user must provide the code
@@ -265,6 +285,11 @@ Combine interest signal with price doubt: "Das klingt interessant, aber der Prei
 - "Ich bin flexibel was den Abholzeitpunkt angeht — auch heute Abend noch möglich."
 - After agreeing a price, confirm: "Perfekt. Bitte schick mir deine Adresse und wir treffen uns heute um [Uhrzeit] zur Abholung."
 
+**⚠️ Know when to stop pushing:** If the seller gives an absolute bottom line ("absolute Grenze", "drunter auf keinen Fall") that falls within the user's max budget, accept it and move to closing. Continuing to push below their stated bottom will:
+- Annoy the seller and risk them withdrawing the offer
+- Waste time when the price is already good (within budget)
+- The right response: "Ok [name], [Preis] ist akzeptiert bei Barzahlung und Abholung heute. Bitte schick mir deine Adresse."
+
 #### Targeting Sellers
 
 - **Active sellers** (responded within hours) are motivated — push harder
@@ -275,20 +300,33 @@ Combine interest signal with price doubt: "Das klingt interessant, aber der Prei
 
 ### Verify Messages Sent
 
-Navigate to the messages page and take a screenshot:
+**This is critical — do not skip this step.** The Camofox API returns `{"ok":true}` even when the message was NOT sent. Always verify:
 
 ```python
+import urllib.request, json, time
+
+# Navigate to the messages page to check
 req = urllib.request.Request(
     f"http://localhost:9377/tabs/{tab_id}/navigate",
     data=json.dumps({"userId": "mercator", "url": "https://www.kleinanzeigen.de/m-nachrichten.html"}).encode(),
     headers={"Content-Type": "application/json"})
 urllib.request.urlopen(req, timeout=15)
 time.sleep(2)
-# Screenshot to verify
-resp = urllib.request.urlopen(f"http://localhost:9377/tabs/{tab_id}/screenshot?userId=mercator", timeout=15)
-with open("messages_check.png", "wb") as f:
-    f.write(resp.read())
+
+# Check the conversation list preview text
+req = urllib.request.Request(f"http://localhost:9377/tabs/{tab_id}/snapshot?userId=mercator")
+resp = urllib.request.urlopen(req, timeout=10)
+snap = json.loads(resp.read())
+
+# The preview should show your sent message text, not the seller's last reply
+# Look for the text preview line under each conversation article
+for line in snap.get("snapshot", "").split('\n'):
+    if 'text:' in line and ('akzeptiert' in line.lower() or 'Abholung' in line or 'Adresse' in line):
+        print(f"✅ Message confirmed: {line[:100]}")
+        break
 ```
+
+**If the message isn't in the preview**, it didn't send — even if the API said ok. Use the `dispatchEvent(new MouseEvent('click'))` technique documented in `references/kleinanzeigen-send-technique.md`. This is the ONLY reliable way to send messages via the conversation view.
 
 If pairing codes appear in the message list, the email gateway intercepted the reply. Re-send messages directly via the listing page instead.
 
@@ -305,6 +343,32 @@ If any `[Email] Sent reply` entries appear for Kleinanzeigen addresses, the gate
 
 ## Camofox Setup
 
+### Post-Purchase: Anti-Theft Recommendations
+
+After the purchase is agreed upon (price accepted, pickup arranged), proactively research and recommend anti-theft accessories for the purchased item before concluding the task. This is particularly important for high-value portable items like e-bikes.
+
+**GPS Trackers — Research approach:**
+
+1. Research GPS trackers available in Germany (Amazon.de, MediaMarkt, Saturn)
+2. Focus on small/concealable devices with GSM/LTE real-time tracking (not just Bluetooth)
+3. Rank by value-for-money, not just lowest price
+4. Include: price, monthly subscription (if any), battery life, where to buy
+
+**Top recommendations for e-bike GPS trackers in Germany (2026):**
+
+| Product | Price | Monthly | Battery | Type |
+|---------|-------|---------|---------|------|
+| **Invoxia Cellular GPS** | ~€89 | €0 (1st yr), €4/mo after | 20 days | LTE-M, real-time |
+| **Tractive GPS for Bikes** | ~€34-49 | €5.99/mo | 1-2 weeks | LTE-M, real-time |
+| **Apple AirTag** | ~€35 | €0 | 1 year | Bluetooth crowd-find only |
+
+- Invoxia on Amazon.de: `https://www.amazon.de/dp/B0BGQS6HLQ`
+- Tractive on Amazon.de: `https://www.amazon.de/dp/B0CFZHQCSX`
+
+**⚠️ AirTag is NOT reliable as primary tracker** — Bluetooth-only, no real-time tracking, privacy alerts notify thieves. Only recommended as a secondary hidden tag.
+
+**Reference file:** See `references/gps-trackers.md` for detailed research with pros/cons, purchase links, and alternatives.
+
 ### Listing Media Capture
 
 After candidates are identified, capture listing images and attach to the task. Use Camofox browser API:
@@ -316,9 +380,10 @@ After candidates are identified, capture listing images and attach to the task. 
 5. Post a task comment with markdown containing listing name, URL, and notes via `POST /api/tasks/{id}/comment`
 6. Deliver to user via `MEDIA:/path/to/image.jpg` in responses
 
-See `camofox-browser-automation` skill for the full API reference.
+See `references/kleinanzeigen-send-technique.md` for the working send-message workflow and `references/gps-trackers.md` for anti-theft recommendations.
 
 ## Related Files
 
+- `references/user-contact-info.md` — User's name, email, phone, and address for sellers who request contact info
 - `references/task-body-template.md` — Template and real example for writing procurement task bodies
-- `references/email-gateway-debugging.md` — Full debugging procedure for Hermes email gateway interference with marketplace notifications
+- `references/email-gateway-debugging.md` — Full debugging procedure for Hermes email gateway interference with marketplace notifications\n- `references/kleinanzeigen-send-technique.md` — Step-by-step working technique for sending messages via Camofox evaluate + dispatchEvent (only reliable method for the conversation view send button)

@@ -1,7 +1,7 @@
 ---
 name: kanban-multi-agent-setup
 description: "Setup and configure a Kanban multi-agent system with specialist worker profiles, boards, and orchestration."
-version: 1.0.0
+version: 1.1.0
 author: Hermes Agent
 platforms: [linux, macos, windows]
 ---
@@ -407,6 +407,54 @@ T1: Implement feature → T2: Review code
   If T2 approves → done
 ```
 
+## Worker output delivery
+
+Kanban workers are dispatched as headless CLI processes. The dispatcher spawns
+`hermes -p <profile> --accept-hooks --skills kanban-worker chat -q work kanban task <id>`
+and routes all output to a log file.
+
+**The deliver gap (solved):** Workers can now deliver their output back to the user
+via `send_message` when the task has `delivery_targets` set. The dispatcher injects
+`HERMES_DELIVERY_TARGETS` (JSON array of platform:target strings) and the worker
+calls `send_message` for each target before completing or blocking.
+
+### Setup for each profile
+
+No special toolset config needed — `send_message` is a core tool, available to all
+agents, and its gate check returns `True` for kanban workers.
+
+### WhatsApp-specific setup
+
+Two fixes were needed (May 2026):
+
+1. **`_parse_target_ref()`** in `tools/send_message_tool.py` — WhatsApp IDs use
+   `@lid`, `@g.us` suffixes that were not recognized as explicit targets. Added
+   a `whatsapp` platform handler that treats any target containing `@` as explicit.
+
+2. **`send_message_tool()` platform config** — kanban workers run under their
+   profile's HERMES_HOME which may lack WhatsApp config. Added an env-var fallback
+   (default port 3000) so the tool can reach the WhatsApp bridge without a
+   profile-scoped gateway config.
+
+### Usage
+
+```python
+task = kanban_create(
+    title="Research X",
+    assignee="athena",
+    delivery_targets=["whatsapp:163354970747009@lid"],
+)
+```
+
+### Interactive (multi-turn) pattern
+
+Workers are single-shot. For back-and-forth: send one question → `kanban_block` →
+main agent forwards answer as comment + `kanban_unblock` → next worker reads
+comments and sends next question. Prefer one-question-at-a-time for intake.
+
+See `references/worker-output-delivery.md` for the full implementation details,
+env var breakdown, and platform-specific setup guidance.
+
 ## References
 
 - `hermes-agent` skill: CLI reference for profile management, kanban commands
@@ -416,3 +464,4 @@ T1: Implement feature → T2: Review code
 - `infisical-secrets` skill: secrets management via Infisical (all credentials, no local .env)
 - `references/github-projects-v2-graphql.md`: GraphQL API reference for configuring GitHub Projects v2 board status fields
 - `references/vercel-neon-patterns.md`: Vercel preview deploy flow, Neon API usage, smoke-check patterns, and credential hygiene for developer agents
+- `references/worker-output-delivery.md`: Kanban worker spawn chain, delivery gap analysis, and proposed fix architecture

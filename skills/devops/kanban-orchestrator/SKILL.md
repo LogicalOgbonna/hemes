@@ -172,6 +172,13 @@ Tell them what you created in plain prose, naming the actual profiles you used:
 
 **Reassignment vs. new task.** If a reviewer blocks with "needs changes," create a NEW task linked from the reviewer's task — don't re-run the same task with a stern look. The new task is assigned to the original implementer profile.
 
+**Delivery targets for chat-forwarding workers.** When creating a task whose worker should deliver its output to a messaging platform (WhatsApp, Telegram, etc.), pass `delivery_targets=["platform:chat_id"]` on `kanban_create`. The dispatcher injects this as `HERMES_DELIVERY_TARGETS` env var; the worker reads it and calls `send_message` before blocking or completing. Common values:
+
+- `delivery_targets=["whatsapp:163354970747009@lid"]` — WhatsApp DM (requires `@lid` suffix)
+- `delivery_targets=["whatsapp:163354970747009@lid", "telegram:-1001234567890"]` — multi-platform
+
+Only set this when you want the worker to push output to a human. Omit it for worker-to-worker handoffs where the output goes into comments/metadata.
+
 **Argument order for links.** `kanban_link(parent_id=..., child_id=...)` — parent first. Mixing them up demotes the wrong task to `todo`.
 
 **Don't pre-create the whole graph if the shape depends on intermediate findings.** If T3's structure depends on what T1 and T2 find, let T3 exist as a "synthesize findings" task whose own first step is to read parent handoffs and plan the rest. Orchestrators can spawn orchestrators.

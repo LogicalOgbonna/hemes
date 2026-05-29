@@ -1,7 +1,7 @@
 ---
 name: infisical-secrets
 description: "Manage all secrets via Infisical — no local .env files. Base secrets in /, project secrets in /<project>, auto-synced across profiles."
-version: 2.3.0
+version: 2.4.0
 created_by: agent
 platforms: [linux, macos]
 metadata:
@@ -288,13 +288,15 @@ Use `infisical run` to inject secrets as environment variables **directly into t
 INFISICAL_TOKEN=$TOKEN infisical run \
   --projectId=24881f6a-bfc0-4f83-82df-d0fcc27e8dab \
   --path=/ --env=prod -- \
-  hermes chat
+  /home/ubuntu/.hermes/hermes-agent/venv/bin/python \
+  -m hermes_cli.main chat
 
-# Start gateway with secrets injected
+# Start gateway with secrets injected (absolute paths required — see pitfall below)
 INFISICAL_TOKEN=$TOKEN infisical run \
   --projectId=24881f6a-bfc0-4f83-82df-d0fcc27e8dab \
   --path=/ --env=prod -- \
-  hermes gateway run
+  /home/ubuntu/.hermes/hermes-agent/venv/bin/python \
+  -m hermes_cli.main gateway run --replace
 ```
 
 **Advantages:**
@@ -353,11 +355,12 @@ if [ -z "$INFISICAL_TOKEN" ]; then
 fi
 export INFISICAL_TOKEN
 
-exec infisical run \
+exec /home/ubuntu/.nvm/versions/node/v22.22.3/bin/infisical run \
   --projectId="$PROJECT_ID" \
   --path=/ \
   --env=prod -- \
-  python -m hermes_cli.main gateway run --replace
+  /home/ubuntu/.hermes/hermes-agent/venv/bin/python \
+  -m hermes_cli.main gateway run --replace
 GATEWAY_EOF
 
 chmod 500 /dev/shm/hermes-gateway/gateway.sh
@@ -415,7 +418,8 @@ grep "platform" ~/.hermes/logs/gateway.log | tail -5
 export INFISICAL_TOKEN="eyJ..."
 infisical run --projectId=24881f6a-bfc0-4f83-82df-d0fcc27e8dab \
   --path=/ --env=prod -- \
-  hermes gateway run --replace
+  /home/ubuntu/.hermes/hermes-agent/venv/bin/python \
+  -m hermes_cli.main gateway run --replace
 ```
 
 **WhatsApp bridge note:** The bridge process runs as a separate Node.js daemon (`node bridge.js --port 3000 --session ...`). It keeps its own credentials in `~/.hermes/whatsapp/session/creds.json` and is unaffected by the .env change. When the gateway reconnects under `infisical run`, it finds the bridge already healthy on port 3000. No re-pairing is needed after a gateway migration — the WhatsApp session survives independently.
@@ -575,7 +579,8 @@ This bypasses Infisical entirely — the gateway process never sees the platform
 
 **If already broken:** The WhatsApp bridge Node.js process and its session data (`~/.hermes/whatsapp/session/`) survive independently — no re-pairing needed. Two recovery paths: (a) update the systemd unit to wrap with `infisical run`, or (b) temporarily restore `.env` with credentials and restart the gateway. Diagnosis: `hermes gateway status` + `grep 'No messaging platforms enabled' ~/.hermes/logs/gateway.log`.
 
-- **Install via npm, not apt.** The apt package (v0.38.0) is too old and blocks writes with "Update Required". npm gives v0.43+.
+- **`infisical run` strips PATH.** The subprocess started by `infisical run` runs in a sanitized environment — it does NOT inherit the parent shell's PATH. Commands like `python` or `hermes` will fail with `executable file not found in $PATH`. Always use absolute paths for both `infisical` itself and the command being wrapped, even in one-shot test commands.
+- **Install via npm, not apt.** The apt package (v0.38.0) is too old and blocks writes
 - **The CLI requires `--projectId`** when using machine identity (env var or token). Without it, you get "Project ID is required when using machine identity".
 - **`@filepath` stores the literal path** if the file doesn't exist or the path is malformed. Always verify the value was stored correctly with `infisical secrets get ... --plain`.
 - **Empty values** are rejected with "ensure that each secret has a none empty key and value". Skip empty secrets rather than trying to store them.
@@ -592,8 +597,15 @@ This bypasses Infisical entirely — the gateway process never sees the platform
 
 ## References
 
-- `references/gateway-tmpfs-wrapper.md` — Zero-disk gateway wrapper using tmpfs + universal auth (wrapper script, pitfalls, recovery from bricked platforms)
+- `references/gateway-restart-pattern.md` — Restart a bricked gateway with Infisical wrapper + secret-masking workaround for wrapper scripts
+- `references/kanban-db-recovery.md` — Recover a corrupt kanban SQLite DB (page corruption → row-level surgical recovery)
 - `references/neon-password-reset.md` — Reset expired/stale Neon DB passwords and update Infisical
 - `references/vercel-env-sync.md` — Sync Infisical secrets to Vercel project env vars
 - `references/git-credential-env.md` — Git credential helper setup for Infisical-managed tokens
 - `references/agent-backup.md` — Daily git backup of agent profiles
+
+## Deployed Scripts
+
+- `~/.hermes/scripts/gateway-wrapper.sh` — Executable wrapper used by the systemd gateway unit (`~/.config/systemd/user/hermes-gateway.service`). Authenticates via Infisical universal auth, auto-repairs corrupt kanban DB via the technique in `references/kanban-db-recovery.md`, then injects secrets via `infisical run` and starts the gateway. Restart with: `systemctl --user restart hermes-gateway`.
+- `~/.hermes/scripts/git-credential-env.sh` — Git credential helper that reads `GITHUB_TOKEN` from environment.
+- `~/.hermes/scripts/git-askpass.sh` — Git askpass helper for non-interactive contexts.

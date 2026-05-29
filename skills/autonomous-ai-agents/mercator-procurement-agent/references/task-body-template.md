@@ -81,7 +81,7 @@ This is the actual body used for a successful e-bike search:
 ## Negotiation guidance
 - Fair market for decent used e-bike in Berlin: €400–€700 (user has bought good one for €400 before)
 - Open at 15-20% below asking
-- Walk away at €600 absolute max
+- Walk away at €700 absolute max
 - Battery health issues = significant price reduction or reject
 ```
 

@@ -80,6 +80,15 @@ The Camofox server's `GET /health` endpoint returns HTTP 200 with `{"ok":true}` 
 
 ### Step 1: Create the keepalive script (with proper health check)
 
+A known-good version is available as a skill support file:
+
+```bash
+cp /home/ubuntu/.hermes/skills/devops/camofox-browser-setup/scripts/camofox_keepalive.sh ~/.hermes/scripts/camofox_keepalive.sh
+chmod +x ~/.hermes/scripts/camofox_keepalive.sh
+```
+
+**⚠️ Verify the deployed script checks `browserConnected`** — do NOT rely on a version that only checks HTTP 200. The script above checks `browserConnected` and `browserRunning` from the health endpoint, and auto-creates a tab to revive the browser if the server is up but idle.
+
 ```bash
 cat > /home/ubuntu/.hermes/scripts/camofox_keepalive.sh << 'SCRIPT'
 #!/bin/bash

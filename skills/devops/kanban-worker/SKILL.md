@@ -164,6 +164,51 @@ You can configure the gateway to receive cross-profile Kanban task notifications
 - `notification_sources: ['default', 'zilor-ppt']` or `"default,zilor-ppt"` restricts subscriptions to specified profiles.
 - Omitting the key keeps the default behavior (profile isolation).
 
+## Delivery targets
+
+When `$HERMES_DELIVERY_TARGETS` is set, it contains a JSON array of platform:target strings (e.g. `["whatsapp:163354970747009@lid"]`). Before calling `kanban_complete` or `kanban_block`, deliver your final output to each target using `send_message`. This ensures the human who dispatched you sees your full response.
+
+The `send_message` tool is always available to kanban workers — its gate check returns True when `HERMES_KANBAN_TASK` is set. You do not need to check if the gateway is running; the tool handles routing through the parent gateway process.
+
+**Known pitfall — WhatsApp @lid targets:** WhatsApp chat IDs use `@lid` (users), `@g.us` (groups), and `@broadcast` suffix formats. These are now handled by the tool, but if you see `"Platform 'whatsapp' is not configured"`, it means your profile's gateway config lacks a WhatsApp entry. The fix is either (a) set `WHATSAPP_BRIDGE_PORT=3000` in the profile's `.env`, or (b) ensure the default profile's gateway config has WhatsApp enabled — workers inherit bridge connectivity from the parent gateway process.
+
+### Delivery lifecycle for interactive tasks
+
+For tasks that need human input before they can complete (like intake or Q&A), use the block-for-answers pattern. **Ask ONE question per block cycle** — not multiple. Sending a batch of questions overwhelms the user and forces them to type a long answer before the next run can continue. One question → block → wait → next question keeps the interaction tight and lets the user answer at their pace.
+
+Use this pattern when your task is interactive (needs human answers before it can complete):
+
+```python
+import json, os
+
+# 1. Check if there are delivery targets
+targets_raw = os.environ.get("HERMES_DELIVERY_TARGETS")
+if targets_raw:
+    targets = json.loads(targets_raw)
+    output = "my final response text here..."
+    for t in targets:
+        send_message(target=t, message=output)
+
+# 2. If you need user input to continue, block after delivering
+kanban_comment(
+    body=f"Sent intake questions to {targets}. Waiting for user's answers.",
+)
+kanban_block(reason="Sent questions to user via delivery targets. Waiting for their answer.")
+# 3. Next run (after unblock) checks the comment thread for answers
+```
+
+### Platform-specific pitfalls
+
+**WhatsApp:** Target format is `whatsapp:<chat_id>@lid`. The `@lid` suffix is required — bare numeric chat IDs are treated as E.164 phone numbers and won't resolve. The worker sends to a local HTTP bridge at `localhost:3000` (override with `WHATSAPP_BRIDGE_PORT` env var). This bridge is always available — no profile-scoped gateway config needed.
+
+**WhatsApp bridge not configured in profile:** If the worker's profile (`~/.hermes/profiles/<name>/config.yaml`) doesn't have a WhatsApp platform entry, `send_message` will still work because the tool falls back to env vars/defaults. If your profile has no WhatsApp config and send_message fails with "not configured", check that `WHATSAPP_BRIDGE_PORT` (default 3000) is reachable.
+
+**Telegram:** Target format is `telegram:<chat_id>` or `telegram:<chat_id>:<thread_id>` for topics. Requires the Telegram adapter to be configured in the gateway config.
+
+**General rule:** If `send_message` resolves the target but says "Platform 'X' is not configured," the tool needs a platform config entry in the profile-scoped or default gateway config. Some platforms (WhatsApp, Weixin) have env-var fallbacks; others require `config.yaml` entries.
+
+See `references/whatsapp-send-message.md` for the full WhatsApp bridge architecture, target format reference, and debugging commands.
+
 ## Do NOT
 
 - Call `delegate_task` as a substitute for `kanban_create`. `delegate_task` is for short reasoning subtasks inside YOUR run; `kanban_create` is for cross-agent handoffs that outlive one API loop.
