@@ -1,7 +1,7 @@
 ---
 name: github-repo-management
 description: "Clone/create/fork repos; manage remotes, releases."
-version: 1.1.0
+version: 1.2.0
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -28,9 +28,9 @@ else
   AUTH="git"
   if [ -z "$GITHUB_TOKEN" ]; then
     if [ -f ~/.hermes/.env ] && grep -q "^GITHUB_TOKEN=" ~/.hermes/.env; then
-      GITHUB_TOKEN=$(grep "^GITHUB_TOKEN=" ~/.hermes/.env | head -1 | cut -d= -f2 | tr -d '\n\r')
+      GITHUB_TOKEN=$(grep "^GITHUB_TOKEN=" ~/.hermes/.env | head -1 | cut -d= -f2 | tr -d '\\n\\r')
     elif grep -q "github.com" ~/.git-credentials 2>/dev/null; then
-      GITHUB_TOKEN=$(grep "github.com" ~/.git-credentials 2>/dev/null | head -1 | sed 's|https://[^:]*:\([^@]*\)@.*|\1|')
+      GITHUB_TOKEN=$(grep "github.com" ~/.git-credentials 2>/dev/null | head -1 | sed 's|https://[^:]*:\\([^@]*\\)@.*|\\1|')
     fi
   fi
 fi
@@ -47,7 +47,7 @@ If you're inside a repo already:
 
 ```bash
 REMOTE_URL=$(git remote get-url origin)
-OWNER_REPO=$(echo "$REMOTE_URL" | sed -E 's|.*github\.com[:/]||; s|\.git$||')
+OWNER_REPO=$(echo "$REMOTE_URL" | sed -E 's|.*github\\.com[:/]||; s|\\.git$||')
 OWNER=$(echo "$OWNER_REPO" | cut -d/ -f1)
 REPO=$(echo "$OWNER_REPO" | cut -d/ -f2)
 ```
@@ -517,7 +517,7 @@ curl -s -X POST \
   -H "Authorization: bearer $GITHUB_TOKEN" \
   -H "Content-Type: application/json" \
   https://api.github.com/graphql \
-  -d '{"query": "mutation { createProjectV2(input: { ownerId: \"'\"$NODE_ID\"'\", title: \"Project Name\" }) { projectV2 { id number title url createdAt } } }"}'
+  -d '{"query": "mutation { createProjectV2(input: { ownerId: \\\"'\\\"$NODE_ID\\\"'\\\", title: \\\"Project Name\\\" }) { projectV2 { id number title url createdAt } } }"}'
 ```
 
 **Under an organization:**
@@ -526,7 +526,7 @@ Replace `ownerId` with the org's node_id (from `curl https://api.github.com/orgs
 
 ### 11b. Query project fields and their options
 
-Before configuring a board's Status field, discover what fields and options already exist. The Status field is a `ProjectV2SingleSelectField`; the project ID comes from the creation response or from listing projects from `user(login:"..."){projectsV2(first:10){nodes{id title}}}`.
+Before configuring a board's Status field, discover what fields and options already exist. The Status field is a `ProjectV2SingleSelectField`; the project ID comes from the creation response or from listing projects from `user(login:\"...\"){projectsV2(first:10){nodes{id title}}}`.
 
 ```python
 import json, urllib.request
@@ -708,6 +708,10 @@ for p in data["data"]["user"]["projectsV2"]["nodes"]:
 - The return payload field is `projectV2Field` (not `field`), typed as `ProjectV2FieldConfiguration` union — must use inline fragment `... on ProjectV2SingleSelectField` to access `options`.
 - Labels live on the repo, not on the board. Labels created on a repo become available for item filtering on any Project v2 board that includes issues from that repo.
 - Verify statuses actually landed by opening the board URL in a browser — the API may succeed silently but the board UI is the ground truth.
+
+## 12. Git Automation Script Pitfalls
+
+When writing `set -e` shell scripts that automate git operations (backups, cron syncs, CI helpers), see `references/git-automation-script-pitfalls.md` for the `git diff --quiet` whole-repo gotcha and the "stage then check" fix pattern.
 
 ## Quick Reference Table
 

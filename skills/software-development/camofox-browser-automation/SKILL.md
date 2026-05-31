@@ -487,6 +487,10 @@ path.write_bytes(resp.read())
 
 Camofox stores browser profiles (cookies, localStorage) on disk for session recovery across server restarts.
 
+### Post-Restart Recovery
+
+When Camofox has been fully down (server process killed, system rebooted), persistent profiles may NOT survive. Creating a tab with the same userId may redirect to the Kleinanzeigen login page instead of landing on the messages page — meaning the session was truly lost. For the full recovery flow (server restart → credential retrieval from Infisical → re-login → cookie consent → messages check), see `references/post-restart-recovery.md`.
+
 ### Storage location
 
 Profiles live at `~/.camofox/profiles/` (default) or the path set by `CAMOFOX_PROFILE_DIR` env var. Each subdirectory is a **SHA-256 hash** of the userId:

@@ -4,12 +4,41 @@ Kleinanzeigen uses **Auth0** for authentication. The login flow has three stages
 
 ## Prerequisites
 
-Get credentials from Infisical before starting:
+Get credentials from Infisical before starting. Two methods:
+
+**Method A: Export (needs pre-existing session token):**
 
 ```bash
 infisical export --projectId="${INFISICAL_PROJECT_ID:-24881f6a-bfc0-4f83-82df-d0fcc27e8dab}" --env=prod --format=json -o /tmp/ka_creds.json
 # Keys: KLEINANZEIGEN_EMAIL=arinze.devops@gmail.com, KLEINANZEIGEN_PASSWORD=Monkey2020@
 ```
+
+**Method B: Token-based (works from a completely clean state):**
+
+```bash
+INF="/home/ubuntu/.nvm/versions/node/v22.22.3/bin/infisical"
+# Client creds from gateway-wrapper.sh:
+CLIENT_ID="62476dd6-1349-43f6-a833-d656bc7d01c4"
+CLIENT_SECRET=*** gateway-wrapper.sh line 8)"
+PROJECT_ID="24881f6a-bfc0-4f83-82df-d0fcc27e8dab"
+
+# Get fresh token (no prior session needed)
+TOKEN=*** login --method=universal-auth \
+  --client-id="$CLIENT_ID" \
+  --client-secret="$CLIENT_SECRET" \
+  --silent --plain 2>/dev/null | tail -1)
+
+# Retrieve secrets
+EMAIL=$($INF secrets get --token="$TOKEN" \
+  --projectId="$PROJECT_ID" --path=/ --env=prod \
+  --plain KLEINANZEIGEN_EMAIL 2>/dev/null)
+
+PASSWORD=*** secrets get --token="$TOKEN" \
+  --projectId="$PROJECT_ID" --path=/ --env=prod \
+  --plain KLEINANZEIGEN_PASSWORD 2>/dev/null)
+```
+
+Method B is preferred when there's no pre-existing Infisical token (e.g., after a gateway restart). The client secret is stored in plaintext in `/home/ubuntu/.hermes/scripts/gateway-wrapper.sh`.
 
 Create a tab with the same userId used previously to attempt session recovery:
 

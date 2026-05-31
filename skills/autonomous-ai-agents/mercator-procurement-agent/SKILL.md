@@ -182,6 +182,18 @@ hermes pairing approve email <CODE>
 
 Then re-message sellers directly via the Camofox browser instead of relying on email replies.
 
+## User Communication Preferences for Status Updates
+
+When the user asks a direct question about procurement status (e.g. "What's the status of the bicycle purchase?", "Has Andi sent venue?"), answer DIRECTLY with the facts only:
+
+- **Don't narrate your steps** ("Let me check Camofox... now I'm logging in... scanning messages...") — the user sees the result, not the process.
+- **Don't re-explain the full history** unless asked. Give the current status in 1-2 sentences.
+- **Don't add extra info beyond what was asked.** If they ask "is the €35 one effective?" — answer yes/no + 1 line why. Not a full comparison with the other model.
+- **Only explain what changed** since last time they asked. "Andi replied — can't do today, proposed Sunday instead. No venue or phone yet."
+- **Lead with the answer**, not the setup. Correct: "Andi replied at 6:05 — can't do today, Sunday midday works but no venue or phone given yet." Wrong: "Let me check Camofox... ok I created a tab... now I'm logging in... let me check the messages... ok here's what I found..."
+
+These preferences are specific to procurement check-in conversations. They apply most when the user asks for a status update or a simple yes/no about a negotiation.
+
 ## Camofox Browser Messaging Workflow
 
 Use this when you need to message sellers directly through the browser (bypassing email):
@@ -322,11 +334,13 @@ snap = json.loads(resp.read())
 # Look for the text preview line under each conversation article
 for line in snap.get("snapshot", "").split('\n'):
     if 'text:' in line and ('akzeptiert' in line.lower() or 'Abholung' in line or 'Adresse' in line):
-        print(f"✅ Message confirmed: {line[:100]}")
+        print(f"Message confirmed: {line[:100]}")
         break
 ```
 
-**If the message isn't in the preview**, it didn't send — even if the API said ok. Use the `dispatchEvent(new MouseEvent('click'))` technique documented in `references/kleinanzeigen-send-technique.md`. This is the ONLY reliable way to send messages via the conversation view.
+**Detecting new replies:** On the messages page, conversation articles that have unread messages show a marker like `text: NEU•Andi Heute 6:05` or `text: NEU•Andi 28.05.2026`. The "NEU" prefix means there's an unread reply from that seller. Scan for `NEU•` in the snapshot text to quickly identify which conversations have new activity without reading each thread.
+
+**If the message isn't in the preview**, it didn't send — even if the API said ok.
 
 If pairing codes appear in the message list, the email gateway intercepted the reply. Re-send messages directly via the listing page instead.
 

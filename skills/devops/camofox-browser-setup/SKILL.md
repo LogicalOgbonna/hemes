@@ -291,6 +291,8 @@ rm /tmp/creds.env
 
 ### Use Credentials at Login Time
 
+**Method A: `infisical run` with subprocess (roundabout but works with any env var):**
+
 ```python
 import subprocess, os
 
@@ -301,7 +303,7 @@ pid = "24881f6a-bfc0-4f83-82df-d0fcc27e8dab"
 login = subprocess.run([INF, "login", "--method=universal-auth",
     "--client-id=<CLIENT_ID>", "--client-secret=<CLIENT_SECRET>",
     "--silent", "--plain"], capture_output=True, text=True, timeout=15)
-tok = login.stdout.strip().split('\n')[-1].strip()
+tok = login.stdout.strip().split('\\n')[-1].strip()
 env = {**os.environ, "INFISICAL_TOKEN": tok}
 
 # Inject credentials into shell
@@ -310,6 +312,40 @@ email = subprocess.run([INF, "run", f"--projectId={pid}", "--path=/", "--env=pro
 pw = subprocess.run([INF, "run", f"--projectId={pid}", "--path=/", "--env=prod", "--",
     "bash", "-c", "echo $KLEINANZEIGEN_PASSWORD"], env=env, capture_output=True, text=True, timeout=15).stdout.strip()
 ```
+
+**Method B: `infisical secrets get --plain` (simpler, works from a clean state):**
+
+```bash
+INF="/home/ubuntu/.nvm/versions/node/v22.22.3/bin/infisical"
+CLIENT_ID="62476dd6-1349-43f6-a833-d656bc7d01c4"
+CLIENT_SECRET="<from gateway-wrapper.sh>"
+PROJECT_ID="24881f6a-bfc0-4f83-82df-d0fcc27e8dab"
+
+# Step 1: Get a fresh token (no pre-existing token needed)
+TOKEN=*** login --method=universal-auth \
+  --client-id="$CLIENT_ID" \
+  --client-secret="$CLIENT_SECRET" \
+  --silent --plain 2>/dev/null | tail -1)
+
+# Step 2: Get specific secrets as plain text
+EMAIL=$($INF secrets get \
+  --token="$TOKEN" \
+  --projectId="$PROJECT_ID" \
+  --path=/ --env=prod \
+  --plain KLEINANZEIGEN_EMAIL 2>/dev/null)
+
+PASSWORD=***  secrets get \
+  --token="$TOKEN" \
+  --projectId="$PROJECT_ID" \
+  --path=/ --env=prod \
+  --plain KLEINANZEIGEN_PASSWORD 2>/dev/null)
+```
+
+Method B is preferred because:
+- Works from a completely clean state (no prior Infisical login needed)
+- Returns the raw secret value (not masked)
+- Avoids the overhead of spawning subprocess shells
+- Uses the same auth pattern as gateway-wrapper.sh
 
 ## Related Files
 
