@@ -52,7 +52,7 @@ Do NOT use `infisical export` — that requires a pre-existing token. Instead, u
 ```bash
 INF="/home/ubuntu/.nvm/versions/node/v22.22.3/bin/infisical"
 CLIENT_ID="62476dd6-1349-43f6-a833-d656bc7d01c4"
-CLIENT_SECRET="1d5366cb530ba6c060055a4e2be8c9e7e05fa17adb90d030b6ff9980e6c7ae89"
+CLIENT_SECRET="***REDACTED***"
 PROJECT_ID="24881f6a-bfc0-4f83-82df-d0fcc27e8dab"
 
 # Step A: Authenticate and get a fresh token
