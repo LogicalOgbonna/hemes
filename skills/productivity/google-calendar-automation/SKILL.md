@@ -203,7 +203,8 @@ $GAPI calendar list --start YYYY-MM-DDT00:00:00Z --end YYYY-MM-DDT23:59:59Z
 - **Scope check.** Ensure OAuth token includes calendar write scope.
 - **Batch creation rate limits.** Space out creation if 50+ events.
 - **Recurring vs individual.** Do NOT create 14 copies of a daily event — use `RRULE:FREQ=DAILY`.
-- **OAuth on WhatsApp.** When receiving raw JSON credentials from the user, write them to `~/.hermes/google_client_secret.json`, then run `setup.py --client-secret ~/.hermes/google_client_secret.json`.
+- **OAuth token expiry/revocation.** If Google API calls fail with `RefreshError: invalid_grant` or `TOKEN_REVOKED`, the stored refresh token is dead. Run `$GSETUP --auth-url`, have the user visit the URL (works from WhatsApp/mobile — the `http://localhost:1` error page is expected, copy the URL bar), then `$GSETUP --auth-code "PASTED_URL"` to get a fresh token. If `--auth-code` fails with `"code_verifier or verifier is not needed"`, the PKCE handshake failed — fall back to the raw HTTP exchange script: `python skills/productivity/google-workspace/scripts/oauth_raw_exchange.py "AUTH_CODE"`, then `$GSETUP --check` to verify. The `oauth_raw_exchange.py` script bypasses the `google_auth_oauthlib` library entirely and does the exchange via raw `urllib.request`.
+- **OAuth on WhatsApp (initial setup).** When receiving raw JSON credentials from the user, write them to `~/.hermes/google_client_secret.json`, then run `setup.py --client-secret ~/.hermes/google_client_secret.json`.
 
 ---
 

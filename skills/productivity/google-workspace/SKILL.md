@@ -1,7 +1,7 @@
 ---
 name: google-workspace
 description: "Gmail, Calendar, Drive, Docs, Sheets via gws CLI or Python."
-version: 1.1.0
+version: 1.2.0
 author: Nous Research
 license: MIT
 platforms: [linux, macos, windows]
@@ -29,12 +29,19 @@ Gmail, Calendar, Drive, Contacts, Sheets, and Docs — through Hermes-managed OA
 ## Scripts
 
 - `scripts/setup.py` — OAuth2 setup (run once to authorize)
+- `scripts/oauth_raw_exchange.py` — fallback token exchange when setup.py PKCE fails (uses raw HTTP, bypasses google_auth_oauthlib). Run this with the auth code when `--auth-code` gives `"code_verifier or verifier is not needed"`.
 - `scripts/google_api.py` — compatibility wrapper CLI. It prefers `gws` for operations when available, while preserving Hermes' existing JSON output contract.
 
 ## First-Time Setup
 
 The setup is fully non-interactive — you drive it step by step so it works
 on CLI, Telegram, Discord, or any platform.
+
+**Before starting:** check if the user already has Google credentials stored
+in their secret manager (e.g. Infisical). If the `google_client_secret.json`
+is already on disk (`~/.hermes/`), skip Step 2 and go to Step 3. If Infisical
+contains `EMAIL_APP_PASSWORD` or equivalent, consider whether the user only
+needs email (use the `himalaya` skill with App Password instead of full OAuth).
 
 Define a shorthand first:
 
@@ -141,6 +148,20 @@ $GSETUP --auth-code &quot;THE_URL_OR_CODE_THE_USER_PASTED&quot;
 If `--auth-code` fails because the code expired, was already used, or came from
 an older browser tab, run `--auth-url` again to get a fresh URL and retry. Do not
 reuse the same URL from a previous tab — always generate a new one.
+
+**PKCE fallback:** If `--auth-code` repeatedly fails with `&quot;code_verifier or
+verifier is not needed&quot;` (fresh code, immediate exchange), the issue is that
+Google's OAuth server ignores PKCE for this confidential client (has client_secret)
+and issues the code without binding a verifier. **Fix:** use the raw HTTP exchange
+script instead, which bypasses google_auth_oauthlib entirely:
+
+```bash
+python scripts/oauth_raw_exchange.py &quot;THE_CODE&quot;
+```
+
+The `oauth_raw_exchange.py` script reads `google_client_secret.json`, does the
+token exchange via a plain POST to `oauth2.googleapis.com/token`, and saves
+the result with all fields needed by `setup.py --check`.
 
 ### Step 5: Verify
 
@@ -313,8 +334,8 @@ All commands return JSON. Parse with `jq` or read directly. Key fields:
 
 | Problem | Fix |
 |---------|-----|
-| `NOT_AUTHENTICATED` | Run setup Steps 2-5 above |
-| `REFRESH_FAILED` | Token revoked or expired — redo Steps 3-5 |
+| `NOT_AUTHENTICATED` | Run setup Steps 2-5 above. **Before starting:** check the user's existing secret store (Infisical, .env, etc.) — the `google_client_secret.json` may already be on disk. If only email is needed, consider the `himalaya` skill instead (App Password, no OAuth). |
+| Token exchange fails with `"code_verifier or verifier is not needed"` | PKCE mismatch with confidential OAuth client — `setup.py --auth-url` uses PKCE but Google issues the code without it (client has client_secret). **Fix:** use `oauth_raw_exchange.py` with the auth code instead: `python scripts/oauth_raw_exchange.py "CODE"`. Then run `setup.py --check` to verify. See also `scripts/oauth_raw_exchange.py` for the raw HTTP approach. |
 | `HttpError 403: Insufficient Permission` | Missing API scope — `$GSETUP --revoke` then redo Steps 3-5 |
 | `AUTHENTICATED (partial)` or "Token missing scopes" | New write capabilities (Drive write/delete, Docs create/edit) require re-authorization. `$GSETUP --revoke` then redo Steps 3-5 to grant the upgraded scopes. |
 | Read APIs work, write APIs fail (e.g. calendar list returns results but create returns 403 insufficient authentication scopes) | Token only has the read-only variant of a scope (e.g. calendar.readonly instead of calendar). Check `jq '.scopes' ~/.hermes/google_token.json` to confirm. Fix: `$GSETUP --revoke` then redo Steps 3-5, approving the full scope(s) in Google's consent screen. |

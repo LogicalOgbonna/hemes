@@ -46,7 +46,20 @@ def save_notified(notified):
     NOTIFIED_LOG.write_text(json.dumps(notified, indent=2))
 
 def get_service():
-    creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
+    from google.oauth2.credentials import Credentials
+    import json
+    raw = json.loads(TOKEN_PATH.read_text())
+    # Use the token's ORIGINAL scopes — passing a reduced set causes
+    # invalid_scope on refresh if the token was issued with broader scopes
+    token_scopes = raw.get("scopes", SCOPES)
+    creds = Credentials(
+        token=raw.get("token"),
+        refresh_token=raw.get("refresh_token"),
+        token_uri=raw.get("token_uri", "https://oauth2.googleapis.com/token"),
+        client_id=raw.get("client_id"),
+        client_secret=raw.get("client_secret"),
+        scopes=token_scopes,
+    )
     if creds and creds.expired and creds.refresh_token:
         creds.refresh(Request())
     return build("calendar", "v3", credentials=creds)
@@ -127,3 +140,11 @@ The script tracks notified event instance IDs via iCalUID + start time. Entries 
 - Token refresh is handled in `get_service()`, but if the token is revoked entirely, the cron job silently fails (exit 1, empty output) — check `hermes cron log <job_id>` for errors
 - The dedup tracker is a plain JSON file — if the machine crashes between script runs, up to one notification per event may be lost (it re-notifies on next run since the tracker won't have the id)
 - **`invalid_scope` on token refresh**: If you replace `Credentials.from_authorized_user_file()` with a manual `Credentials()` constructor, you MUST pass the token's ORIGINAL scopes, not a restricted subset. Google's OAuth server rejects refresh requests that request fewer scopes than the original token was issued for (returns `invalid_scope: Bad Request`). To get the original scopes, read them from the stored token file: `raw = json.loads(token_path.read_text()); scopes = raw.get("scopes", SCOPES)`. Passing `scopes=SCOPES` (a reduced set like `calendar.readonly` when the token was issued with broader scopes like `calendar, gmail.send, drive`) will always fail on refresh.
+- **`invalid_grant: Token has been expired or revoked.`** — The entire refresh token is dead (not just a scope mismatch). This happens when:
+  - The token was revoked by the user (Google Account → Security → Third-party apps)
+  - The token expired after 6+ months of no usage
+  - The Google Cloud project was deleted or the OAuth client was removed
+  - **Diagnosis:** run `$GSETUP --check` — it prints `REFRESH_FAILED: invalid_grant: Token has been expired or revoked.`
+  - **Fix:** Re-authorize via `$GSETUP --auth-url` (see google-workspace SKILL.md Steps 3-5). The `setup.py` script uses `http://localhost:1` as the redirect URI — the user visits the URL on any device (including mobile/WhatsApp), authorizes, gets a browser error page (expected), copies the URL from the address bar, and pastes it back. The agent runs `$GSETUP --auth-code "PASTED_URL"` to exchange the code for a fresh token.
+- **Re-authorizing on WhatsApp/mobile:** The `setup.py` flow works without a local callback server. The redirect URI `http://localhost:1` means the browser will show an error page after authorization — this is expected. The user copies the ENTIRE URL from the address bar (which contains the `?code=...` parameter) and pastes it as the auth code. The agent passes it to `$GSETUP --auth-code "URL_OR_CODE"` — the script handles both raw codes and full URLs.
+- **PKCE exchange error: `code_verifier or verifier is not needed`:** If `--auth-code` fails with this error even though `--auth-url` was run immediately before, the PKCE handshake failed. This happens with confidential OAuth clients — Google ignores PKCE and issues the code without binding a verifier. **Fix:** use `oauth_raw_exchange.py` instead: `python scripts/oauth_raw_exchange.py "CODE"`. This bypasses `google_auth_oauthlib` entirely and does the token exchange via raw HTTP POST. Do NOT retry `--auth-code` more than once per code — each attempt consumes the code.

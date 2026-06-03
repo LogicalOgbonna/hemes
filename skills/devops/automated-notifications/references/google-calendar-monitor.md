@@ -133,9 +133,9 @@ cronjob action=create \
 3. **24-hour state cleanup** prevents the notification log from growing unbounded.
 4. **Silent exit** when no events means zero noise — the user only hears from this when there's actually something to do.
 
-## Troubleshooting: OAuth Token Scope Mismatch
+## Troubleshooting: OAuth Token Issues
 
-### Symptom
+### Symptom: `invalid_scope` — Scope mismatch on refresh
 
 The script fails with:
 ```
@@ -241,6 +241,70 @@ python3 -c "import json; t=json.load(open('/home/ubuntu/.hermes/google_token.jso
 ```
 
 If you see scopes other than `calendar.readonly`, the token will likely hit the `invalid_scope` error on the first refresh (typically 1 hour after creation).
+
+### Symptom: `invalid_grant` — Token expired or revoked
+
+The script fails with:
+```
+google.auth.exceptions.RefreshError:
+  ('invalid_grant: Token has been expired or revoked.', {...})
+```
+
+This is **not** a scope mismatch — the entire refresh token is dead. Google revoked it (or it naturally expired after months of no use).
+
+#### Diagnosis
+
+Run:
+```bash
+GSETUP="python ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/google-workspace/scripts/setup.py"
+$GSETUP --check
+```
+
+If it prints `REFRESH_FAILED: invalid_grant`, the token is dead.
+
+#### Fix: Re-authorize via setup.py (agent-mediated flow)
+
+This flow works on any platform including WhatsApp/mobile — no local callback server needed:
+
+```bash
+# Step 1: Generate auth URL
+$GSETUP --auth-url
+```
+
+Send the printed URL to the user. The `setup.py` script uses `http://localhost:1` as the redirect URI — the user opens the URL on their phone, authorizes "View your calendars", and gets a browser error page (expected because localhost:1 can't be reached on mobile). They copy the **entire URL** from the address bar (it contains `?code=...&scope=...`) and paste it back.
+
+```bash
+# Step 2: Exchange the code
+$GSETUP --auth-code "THE_PASTED_URL_OR_CODE"
+```
+
+This saves a fresh token with the exact scopes granted (no mismatch risk).
+
+```bash
+# Step 3: Verify
+$GSETUP --check   # Should print AUTHENTICATED
+```
+
+The cron job picks up the new token on its next run — no restart needed.
+
+#### Why this happens
+
+Google refresh tokens expire:
+- After 6 months of no usage
+- When the user manually revokes access (Google Account → Security → Third-party apps)
+- When the Google Cloud OAuth client is deleted or disabled
+- On certain Google Cloud project configuration changes (consent screen reconfiguration, client secret rotation)
+
+#### Agent-mediated vs interactive re-auth
+
+The re-auth script in the `invalid_scope` fix section above uses `input()` — it's designed for interactive terminal use where the user is at a keyboard. When the user is on WhatsApp/Telegram/Discord (mobile), use the `setup.py` approach instead:
+1. Agent runs `$GSETUP --auth-url`
+2. Agent sends the URL to the user
+3. User visits URL on their phone, authorizes, copies the redirect URL from the error page
+4. User pastes the URL to the agent
+5. Agent runs `$GSETUP --auth-code "URL"` to exchange
+
+This works because `setup.py` stores the PKCE verifier locally before generating the URL, so the code exchange can happen in a later step without the user being on the same machine.
 
 ## Timezone Pitfall
 

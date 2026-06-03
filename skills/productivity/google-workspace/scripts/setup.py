@@ -248,7 +248,7 @@ def store_client_secret(path: str):
     print(f"OK: Client secret saved to {CLIENT_SECRET_PATH}")
 
 
-def _save_pending_auth(*, state: str, code_verifier: str):
+def _save_pending_auth(*, state: str, code_verifier: str | None):
     """Persist the OAuth session bits needed for a later token exchange."""
     PENDING_AUTH_PATH.write_text(
         json.dumps(
@@ -275,8 +275,8 @@ def _load_pending_auth() -> dict:
         print("Run --auth-url again to start a fresh OAuth session.")
         sys.exit(1)
 
-    if not data.get("state") or not data.get("code_verifier"):
-        print("ERROR: Pending OAuth session is missing PKCE data.")
+    if not data.get("state"):
+        print("ERROR: Pending OAuth session is missing state data.")
         print("Run --auth-url again to start a fresh OAuth session.")
         sys.exit(1)
 
@@ -349,13 +349,15 @@ def exchange_auth_code(code: str):
         if scope_val:
             granted_scopes = scope_val.split()
 
-    flow = Flow.from_client_secrets_file(
-        str(CLIENT_SECRET_PATH),
-        scopes=granted_scopes,
-        redirect_uri=pending_auth.get("redirect_uri", REDIRECT_URI),
-        state=pending_auth["state"],
-        code_verifier=pending_auth["code_verifier"],
-    )
+    flow_kwargs = {
+        "client_secrets_file": str(CLIENT_SECRET_PATH),
+        "scopes": granted_scopes,
+        "redirect_uri": pending_auth.get("redirect_uri", REDIRECT_URI),
+        "state": pending_auth["state"],
+    }
+    if pending_auth.get("code_verifier"):
+        flow_kwargs["code_verifier"] = pending_auth["code_verifier"]
+    flow = Flow.from_client_secrets_file(**flow_kwargs)
 
     try:
         # Accept partial scopes — user may deselect some permissions in the consent screen
