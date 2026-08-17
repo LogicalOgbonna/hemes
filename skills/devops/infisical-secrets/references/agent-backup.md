@@ -35,8 +35,14 @@ hemes/
 
 1. Cron job runs at 2:00 AM daily via Hermes scheduler
 2. Script copies profile files to `hemes/agents/<name>/`
-3. Commits changes to git
+3. Commits changes to git (change detection is **scoped to `agents/ skills/ scripts/`** — unrelated working-tree changes elsewhere in the repo never trigger or leak into backup commits; commit uses a pathspec)
 4. Pushes to GitHub using `infisical run` + `GIT_ASKPASS` for auth
+
+## Auth
+
+- `GITHUB_TOKEN` is fetched from Infisical (project `24881f6a-bfc0-4f83-82df-d0fcc27e8dab`) via `infisical run`.
+- The push step first fetches a **fresh universal-auth token** using the machine identity in `~/.hermes/.infisical-auth.env` (`CLIENT_ID`/`CLIENT_SECRET`) and passes it as `INFISICAL_TOKEN` to `infisical run`. This keeps pushes working even after the persisted CLI session expires.
+- `set -o pipefail` ensures a failed push fails the script (no false success).
 
 ## Script
 
@@ -45,30 +51,39 @@ hemes/
 ```bash
 #!/bin/bash
 set -e
+set -o pipefail
 
 REPO_DIR="/home/ubuntu/hemes"
-AGENTS_DIR="$REPO_DIR/agents"
-HERMES_PROFILES="$HOME/.hermes/profiles"
+HERMES_DIR="$HOME/.hermes"
 INF="/home/ubuntu/.nvm/versions/node/v22.22.3/bin/infisical"
 PROJECT_ID="24881f6a-bfc0-4f83-82df-d0fcc27e8dab"
 
+cd "$REPO_DIR"
+
 # Copy each profile
 for profile in zeus athena; do
-    if [ ! -d "$HERMES_PROFILES/$profile" ]; then continue; fi
-    mkdir -p "$AGENTS_DIR/$profile"
+    if [ ! -d "$HERMES_DIR/profiles/$profile" ]; then continue; fi
     for file in SOUL.md config.yaml profile.yaml .env; do
-        [ -f "$HERMES_PROFILES/$profile/$file" ] && cp "$HERMES_PROFILES/$profile/$file" "$AGENTS_DIR/$profile/$file"
+        [ -f "$HERMES_DIR/profiles/$profile/$file" ] && \
+            cp "$HERMES_DIR/profiles/$profile/$file" "agents/$profile/$file"
     done
 done
 
-# Commit and push
-cd "$REPO_DIR"
-if ! git diff --quiet && git diff --cached --quiet; then
-    git add agents/
-    git commit -m "agents: daily backup $(date +%Y-%m-%d)"
-    $INF run --projectId=$PROJECT_ID --path=/ --env=prod -- \
-      env GIT_ASKPASS="$HOME/.hermes/scripts/git-askpass.sh" \
-      bash -c "cd $REPO_DIR && git push origin main 2>&1"
+# Commit and push — checks scoped to backup paths only
+BACKUP_PATHS="agents skills scripts"
+if git diff --quiet -- $BACKUP_PATHS && git diff --cached --quiet -- $BACKUP_PATHS \
+   && [ -z "$(git ls-files --others --exclude-standard -- $BACKUP_PATHS)" ]; then
+    echo "No changes to commit"
+else
+    git add $BACKUP_PATHS
+    git commit -m "backup: agents + skills $(date +%Y-%m-%d)" -- $BACKUP_PATHS
+    # Fresh machine-identity token so pushes survive CLI session expiry
+    set -a; . "$HOME/.hermes/.infisical-auth.env"; set +a
+    TOKEN=$($INF login --method=universal-auth --client-id="$CLIENT_ID" \
+            --client-secret="$CLIENT_SECRET" --plain --silent 2>/dev/null | tail -1) || TOKEN=""
+    INFISICAL_TOKEN="$TOKEN" $INF run --projectId=$PROJECT_ID --path=/ --env=prod --silent -- \
+        env GIT_ASKPASS="$HOME/.hermes/scripts/git-askpass.sh" \
+        bash -c "cd $REPO_DIR && git push origin main 2>&1"
 fi
 ```
 
