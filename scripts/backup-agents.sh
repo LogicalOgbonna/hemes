@@ -8,6 +8,7 @@
 #   scripts/         — backup scripts themselves (from hemes/scripts/)
 
 set -e
+set -o pipefail
 
 REPO_DIR="/home/ubuntu/hemes"
 HERMES_DIR="$HOME/.hermes"
@@ -75,9 +76,23 @@ else
     git commit -m "backup: agents + skills $(date +%Y-%m-%d)" -- $BACKUP_PATHS
     
     GIT_ASKPASS="$HOME/.hermes/scripts/git-askpass.sh"
-    $INF run --projectId=$PROJECT_ID --path=/ --env=prod -- \
-      env GIT_ASKPASS="$GIT_ASKPASS" \
-      bash -c "cd $REPO_DIR && git push origin main 2>&1" | tail -3
+    # Fetch a fresh Infisical token via the machine identity (universal auth)
+    # when available, so pushes work even if the persisted CLI session expired.
+    AUTH_ENV="$HOME/.hermes/.infisical-auth.env"
+    TOKEN=""
+    if [ -f "$AUTH_ENV" ]; then
+        set -a; . "$AUTH_ENV"; set +a
+        TOKEN=$($INF login --method=universal-auth --client-id="$CLIENT_ID" --client-secret="$CLIENT_SECRET" --plain --silent 2>/dev/null | tail -1) || TOKEN=""
+    fi
+    if [ -n "$TOKEN" ]; then
+        INFISICAL_TOKEN="$TOKEN" $INF run --projectId=$PROJECT_ID --path=/ --env=prod --silent -- \
+            env GIT_ASKPASS="$GIT_ASKPASS" \
+            bash -c "cd $REPO_DIR && git push origin main 2>&1"
+    else
+        $INF run --projectId=$PROJECT_ID --path=/ --env=prod -- \
+            env GIT_ASKPASS="$GIT_ASKPASS" \
+            bash -c "cd $REPO_DIR && git push origin main 2>&1"
+    fi
     
     echo "✅ Backed up and pushed"
 fi
