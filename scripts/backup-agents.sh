@@ -63,12 +63,16 @@ if [ -d "$SCRIPTS_DST" ]; then
     echo "  $script_count scripts"
 fi
 
-# Commit and push
-if git diff --quiet && git diff --cached --quiet && [ -z "$(git ls-files --others --exclude-standard)" ]; then
+# Commit and push.
+# Checks are scoped to the backup paths only: unrelated working-tree changes
+# elsewhere in the repo (e.g. apps/) must not trigger a commit attempt or get
+# swept into the backup commit (pathspec commit).
+BACKUP_PATHS="agents skills scripts"
+if git diff --quiet -- $BACKUP_PATHS && git diff --cached --quiet -- $BACKUP_PATHS && [ -z "$(git ls-files --others --exclude-standard -- $BACKUP_PATHS)" ]; then
     echo "No changes to commit"
 else
-    git add agents/ skills/ scripts/
-    git commit -m "backup: agents + skills $(date +%Y-%m-%d)"
+    git add $BACKUP_PATHS
+    git commit -m "backup: agents + skills $(date +%Y-%m-%d)" -- $BACKUP_PATHS
     
     GIT_ASKPASS="$HOME/.hermes/scripts/git-askpass.sh"
     $INF run --projectId=$PROJECT_ID --path=/ --env=prod -- \
