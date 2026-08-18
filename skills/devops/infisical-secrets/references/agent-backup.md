@@ -31,6 +31,8 @@ hemes/
 - Secret values — only Infisical stubs
 - Skills — stored globally in `~/.hermes/skills/`
 
+**Doc-hygiene note:** the `hemes/skills/` tree is a generated copy — the script does `rm -rf` + re-copy from `~/.hermes/skills/` every run. Never edit files under `hemes/skills/`; edit the source in `~/.hermes/skills/` and the next run commits it.
+
 ## How It Works
 
 1. Cron job runs at 2:00 AM daily via Hermes scheduler

@@ -520,7 +520,13 @@ See `references/vercel-env-sync.md` for the full script with error handling and 
 
 Daily git-backed backup of agent profiles (SOUL.md, config) so state survives container restarts. The backup script copies `~/.hermes/profiles/<name>/` files to the project repo at `agents/<name>/`, then commits and pushes to GitHub.
 
-Key auth pattern: the git push runs inside `infisical run` with `GIT_ASKPASS` to authenticate using `GITHUB_TOKEN` from Infisical — no token ever touches disk.
+Auth pattern: the push runs inside `infisical run` with `GIT_ASKPASS` using `GITHUB_TOKEN` from Infisical — no token ever touches disk. **Do not rely on the persisted `infisical login` session for cron pushes** — it expires silently and the run dies with a 403 "Your token has expired". The script mints a fresh universal-auth token on every push (`infisical login --method=universal-auth --client-id=... --client-secret=... --plain --silent`, captured from stdout, passed as `INFISICAL_TOKEN`), so it never depends on session state.
+
+Backup-script pitfalls learned the hard way (apply to ANY git commit/push automation):
+- **Scope change detection to the committed paths.** A whole-repo `git diff --quiet` trips on unrelated dirty files (e.g. a WIP `apps/` tree), forcing the script into the commit branch; with nothing staged in scope, `git commit` fails and `set -e` aborts before the push ever runs — every day, silently. Check only the backup paths: `git diff --quiet -- <paths>` + `git ls-files --others --exclude-standard -- <paths>` for untracked.
+- **Commit with a pathspec** (`git commit -m ... -- <paths>`) so unrelated pre-staged changes never get swept into automation commits.
+- **Never pipe a push to `tail` without `set -o pipefail`** — the pipeline's exit code is `tail`'s, so a failed push prints a false success ("✅ Backed up and pushed") while the remote never updated. Add `set -o pipefail` (or check `${PIPESTATUS[0]}`).
+- A dirty working tree elsewhere in the repo is NOT a backup failure — report it but don't let it block or contaminate the backup commit.
 
 See `references/agent-backup.md` for the full script, setup, and adding new profiles.
 
@@ -585,6 +591,7 @@ This bypasses Infisical entirely — the gateway process never sees the platform
 - **`@filepath` stores the literal path** if the file doesn't exist or the path is malformed. Always verify the value was stored correctly with `infisical secrets get ... --plain`.
 - **Empty values** are rejected with "ensure that each secret has a none empty key and value". Skip empty secrets rather than trying to store them.
 - **Access tokens expire in 30 days.** Machine identity access tokens have a 30-day TTL. For long-running daemons, use universal auth (client ID + secret, auto-refreshing) or cloud IAM (no token to rotate).
+- **Persisted `infisical login` sessions expire silently.** A cron job / daemon relying on the stored session will fail with 403 "Your token has expired" after expiry — and re-running `infisical login` may not produce a usable persisted session (status still shows expired). For automation, mint a fresh token per run (`infisical login --method=universal-auth ... --silent --plain`, take last stdout line) and pass it explicitly as `INFISICAL_TOKEN` — the env var takes precedence over any persisted session. See "Agent Profile Backup to Git".
 - **Use `execute_code` for bulk uploads, not shell.** JWT tokens and secrets with special characters (`@`, `/`, `+`, `=`) break bash quoting. Use Python `subprocess.run()` inside `execute_code` to pass secrets as env vars and temp files.
 - **Don't commit `.infisical.json`** — add to `.gitignore`
 - **Don't echo secret values** in terminal or logs — mask them
