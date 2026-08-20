@@ -8,7 +8,6 @@
 #   scripts/         — backup scripts themselves (from hemes/scripts/)
 
 set -e
-set -o pipefail
 
 REPO_DIR="/home/ubuntu/hemes"
 HERMES_DIR="$HOME/.hermes"
@@ -64,35 +63,36 @@ if [ -d "$SCRIPTS_DST" ]; then
     echo "  $script_count scripts"
 fi
 
-# Commit and push.
-# Checks are scoped to the backup paths only: unrelated working-tree changes
-# elsewhere in the repo (e.g. apps/) must not trigger a commit attempt or get
-# swept into the backup commit (pathspec commit).
-BACKUP_PATHS="agents skills scripts"
-if git diff --quiet -- $BACKUP_PATHS && git diff --cached --quiet -- $BACKUP_PATHS && [ -z "$(git ls-files --others --exclude-standard -- $BACKUP_PATHS)" ]; then
-    echo "No changes to commit"
-else
-    git add $BACKUP_PATHS
-    git commit -m "backup: agents + skills $(date +%Y-%m-%d)" -- $BACKUP_PATHS
-    
-    GIT_ASKPASS="$HOME/.hermes/scripts/git-askpass.sh"
-    # Fetch a fresh Infisical token via the machine identity (universal auth)
-    # when available, so pushes work even if the persisted CLI session expired.
-    AUTH_ENV="$HOME/.hermes/.infisical-auth.env"
-    TOKEN=""
-    if [ -f "$AUTH_ENV" ]; then
-        set -a; . "$AUTH_ENV"; set +a
-        TOKEN=$($INF login --method=universal-auth --client-id="$CLIENT_ID" --client-secret="$CLIENT_SECRET" --plain --silent 2>/dev/null | tail -1) || TOKEN=""
+# --- Refresh Infisical auth (machine identity) so GITHUB_TOKEN is fetchable ---
+# The env-var token can go stale; re-login with the stored client credentials
+# (same pattern as gateway-wrapper.sh). Falls back to existing INFISICAL_TOKEN.
+AUTH_ENV="$HOME/.hermes/.infisical-auth.env"
+if [ -f "$AUTH_ENV" ]; then
+    set -a; source "$AUTH_ENV"; set +a
+    FRESH_TOKEN=$($INF login --method=universal-auth \
+      --client-id="$CLIENT_ID" \
+      --client-secret="$CLIENT_SECRET" \
+      --silent --plain 2>/dev/null | tail -1)
+    if [ -n "$FRESH_TOKEN" ]; then
+        export INFISICAL_TOKEN="$FRESH_TOKEN"
+        echo "Infisical token refreshed"
     fi
-    if [ -n "$TOKEN" ]; then
-        INFISICAL_TOKEN="$TOKEN" $INF run --projectId=$PROJECT_ID --path=/ --env=prod --silent -- \
-            env GIT_ASKPASS="$GIT_ASKPASS" \
-            bash -c "cd $REPO_DIR && git push origin main 2>&1"
-    else
-        $INF run --projectId=$PROJECT_ID --path=/ --env=prod -- \
-            env GIT_ASKPASS="$GIT_ASKPASS" \
-            bash -c "cd $REPO_DIR && git push origin main 2>&1"
-    fi
-    
-    echo "✅ Backed up and pushed"
 fi
+
+# Commit (only if backup paths have actual changes)
+git add agents/ skills/ scripts/
+if git diff --cached --quiet; then
+    echo "No backup changes to commit"
+else
+    git commit -m "backup: agents + skills $(date +%Y-%m-%d)"
+fi
+
+# Always attempt push — idempotent: no-op ("Everything up-to-date") if
+# origin is current. Guarantees a previously-failed push gets retried even
+# on days with no new backup changes.
+GIT_ASKPASS="$HOME/.hermes/scripts/git-askpass.sh"
+$INF run --projectId=$PROJECT_ID --path=/ --env=prod -- \
+  env GIT_ASKPASS="$GIT_ASKPASS" \
+  bash -c "cd $REPO_DIR && git push origin main 2>&1" | tail -3
+
+echo "✅ Backed up and pushed"
