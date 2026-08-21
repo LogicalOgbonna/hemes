@@ -71,23 +71,36 @@ for profile in zeus athena; do
     done
 done
 
-# Commit and push — checks scoped to backup paths only
+# Commit — checks scoped to backup paths only
 BACKUP_PATHS="agents skills scripts"
 if git diff --quiet -- $BACKUP_PATHS && git diff --cached --quiet -- $BACKUP_PATHS \
    && [ -z "$(git ls-files --others --exclude-standard -- $BACKUP_PATHS)" ]; then
-    echo "No changes to commit"
+    echo "No backup changes to commit"
 else
     git add $BACKUP_PATHS
     git commit -m "backup: agents + skills $(date +%Y-%m-%d)" -- $BACKUP_PATHS
-    # Fresh machine-identity token so pushes survive CLI session expiry
-    set -a; . "$HOME/.hermes/.infisical-auth.env"; set +a
-    TOKEN=$($INF login --method=universal-auth --client-id="$CLIENT_ID" \
-            --client-secret="$CLIENT_SECRET" --plain --silent 2>/dev/null | tail -1) || TOKEN=""
-    INFISICAL_TOKEN="$TOKEN" $INF run --projectId=$PROJECT_ID --path=/ --env=prod --silent -- \
-        env GIT_ASKPASS="$HOME/.hermes/scripts/git-askpass.sh" \
-        bash -c "cd $REPO_DIR && git push origin main 2>&1"
 fi
+
+# Push — ALWAYS attempted, outside the change-detection branch. Idempotent
+# ("Everything up-to-date" is a no-op success), so a push that failed on a
+# previous run (e.g. expired Infisical token) gets retried even on days with
+# no new backup changes. If the push lives only inside the "changes exist"
+# branch, a failed push + a no-change day = origin silently lags forever.
+GIT_ASKPASS="$HOME/.hermes/scripts/git-askpass.sh"
+# Fresh machine-identity token so pushes survive CLI session expiry
+set -a; . "$HOME/.hermes/.infisical-auth.env"; set +a
+TOKEN=$($INF login --method=universal-auth --client-id="$CLIENT_ID" \
+        --client-secret="$CLIENT_SECRET" --plain --silent 2>/dev/null | tail -1) || TOKEN=""
+INFISICAL_TOKEN="$TOKEN" $INF run --projectId=$PROJECT_ID --path=/ --env=prod --silent -- \
+    env GIT_ASKPASS="$GIT_ASKPASS" \
+    bash -c "cd $REPO_DIR && git push origin main 2>&1"
 ```
+
+## Failure Modes / Verification
+
+- **Symptom: script says "No backup changes to commit" but `git status -sb` shows `[ahead N]`.** A push failed on an earlier run (expired token, network) and no-change days never retried it. Check with `git log origin/main..main` to see what is stuck. The always-push structure above prevents this; if you see it, push manually once (`git push origin main` with a fresh token) to resync.
+- **Symptom: `infisical run` dies with 403 "Your token has expired" even right after `infisical login`.** A stale `INFISICAL_TOKEN` env var in the shell overrides the fresh session — `infisical run` uses the env var first. Fix: export the freshly minted token (`INFISICAL_TOKEN="$(infisical login ... --plain | tail -1)"`), or `env -u INFISICAL_TOKEN infisical run ...` to fall back to the persisted session. The universal-auth client creds live in `~/.hermes/.infisical-auth.env` (mode 0600, same file the gateway wrapper sources).
+- **Verification of a healthy run:** `git status -sb` shows `## main...origin/main` with no ahead/behind, and origin log head matches local head.
 
 ## Setting Up for a New Agent Profile
 
