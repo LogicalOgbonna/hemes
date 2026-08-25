@@ -29,7 +29,9 @@ hemes/
 
 - State databases (`state.db`, `sessions/`) — ephemeral, container-local
 - Secret values — only Infisical stubs
-- Skills — stored globally in `~/.hermes/skills/`
+- Skills dot-directories (`.archive/`, `.hub/`, `.curator_*`, etc.) — the script's
+  glob copy skips dotfiles, so archived/curated skills under hidden dirs are not
+  backed up (only active skills in `~/.hermes/skills/` are)
 
 **Doc-hygiene note:** the `hemes/skills/` tree is a generated copy — the script does `rm -rf` + re-copy from `~/.hermes/skills/` every run. Never edit files under `hemes/skills/`; edit the source in `~/.hermes/skills/` and the next run commits it.
 
