@@ -102,3 +102,4 @@ Key parameters:
 - **google-workspace** — for setting up Google Calendar OAuth
 - **cronjob** tool — for scheduling
 - **github-auth** — for GitHub API token setup
+- **hermes-email-gateway** — email is one of the delivery platforms; configure/secure the gateway when notifications should arrive via email

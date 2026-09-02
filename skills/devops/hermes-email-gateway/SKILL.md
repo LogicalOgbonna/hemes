@@ -7,7 +7,7 @@ platforms: [linux, macos]
 metadata:
   hermes:
     tags: [hermes, email, gateway, security, imap, smtp, platform]
-    related_skills: [hermes-agent, infisical-secrets, mission-control-dashboard]
+    related_skills: [hermes-agent, infisical-secrets, mission-control-dashboard, automated-notifications]
 ---
 
 # Hermes Email Gateway Platform
@@ -127,6 +127,7 @@ Without `EMAIL_HOME_ADDRESS`, the platform adapter has no way to route incoming 
 - `infisical-secrets` — Email credentials are stored in Infisical at path `/`
 - `hermes-agent` — General Hermes configuration (gateway, platforms, logging)
 - `mission-control-dashboard` — Dashboard that monitors agents including any email-triggered sessions
+- `automated-notifications` — polling + no_agent cron pattern; the email gateway is one delivery platform for such notifications
 
 ## References
 

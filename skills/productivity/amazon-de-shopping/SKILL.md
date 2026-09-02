@@ -91,3 +91,7 @@ Prices from search snippets are approximate. For exact prices, visit the product
 - **Shorts**: Dri-FIT Shorts (Nike), Own the Run Shorts (Adidas)
 - **Trousers**: Dri-FIT Academy (Nike), Tiro League (Adidas), Rival Fleece (Under Armour)
 - **Training shoes**: Metcon (Nike, ~€140), Dropset (Adidas, ~€100), Fuse (Puma, ~€75)
+
+## Related skills
+
+- `camofox-browser-automation` — logged-in headless-browser automation for German marketplaces (Kleinanzeigen messaging, etc.) when the flow needs a real browser session instead of search-term recommendations.
