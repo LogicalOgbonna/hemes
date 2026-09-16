@@ -678,3 +678,9 @@ When Camofox restarts, previously logged-in sessions can be recovered by using t
 | `mercator` | Main Kleinanzeizen procurement agent |
 | `mercator_procurement` | Earlier Mercator iteration (may have older session) |
 | `hermes` | Generic/default sessions |
+
+## Related Skills
+
+- `amazon-de-shopping` — German-marketplace shopping workflow for Amazon.de. The inverse lesson lives there: Amazon.de product pages cannot be reliably driven or verified through this browser stack, so that skill falls back to search-term recommendations.
+- `mercator-procurement-agent` — procurement/negotiation agent profile that drives this Camofox stack for Kleinanzeigen seller messaging.
+- `automated-notifications` — the keepalive cron job here is one instance of the general no_agent polling pattern documented in that skill.
