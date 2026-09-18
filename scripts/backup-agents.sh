@@ -91,8 +91,19 @@ fi
 # origin is current. Guarantees a previously-failed push gets retried even
 # on days with no new backup changes.
 GIT_ASKPASS="$HOME/.hermes/scripts/git-askpass.sh"
-$INF run --projectId=$PROJECT_ID --path=/ --env=prod -- \
+PUSH_OUT=$($INF run --projectId=$PROJECT_ID --path=/ --env=prod -- \
   env GIT_ASKPASS="$GIT_ASKPASS" \
-  bash -c "cd $REPO_DIR && git push origin main 2>&1" | tail -3
+  bash -c "cd $REPO_DIR && git push origin main 2>&1" 2>&1) || true
+printf '%s\n' "$PUSH_OUT" | tail -3
 
-echo "✅ Backed up and pushed"
+# Verify against origin rather than trusting the push command's own output.
+# A successful push updates the local origin/main ref, so comparing HEAD to
+# origin/main is a real check; a failed push leaves the ref stale.
+LOCAL=$(git rev-parse HEAD)
+REMOTE=$(git rev-parse origin/main 2>/dev/null || echo "UNREACHABLE")
+if [ "$LOCAL" = "$REMOTE" ]; then
+    echo "✅ Backed up and pushed (origin/main == $LOCAL)"
+else
+    echo "❌ PUSH FAILED — local HEAD $LOCAL != origin/main $REMOTE"
+    exit 1
+fi
