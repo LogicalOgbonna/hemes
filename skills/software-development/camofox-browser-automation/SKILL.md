@@ -681,6 +681,6 @@ When Camofox restarts, previously logged-in sessions can be recovered by using t
 
 ## Related Skills
 
-- `amazon-de-shopping` — German-marketplace shopping workflow for Amazon.de. The inverse lesson lives there: Amazon.de product pages cannot be reliably driven or verified through this browser stack, so that skill falls back to search-term recommendations.
+- `german-marketplace-shopping` — class-level German-marketplace purchasing playbook. The inverse lesson lives there: Amazon.de product pages cannot be reliably driven or verified through this browser stack, so that skill falls back to search-term recommendations. Use this Camofox skill for the Kleinanzeigen half of that playbook (seller search, screenshots, messaging).
 - `mercator-procurement-agent` — procurement/negotiation agent profile that drives this Camofox stack for Kleinanzeigen seller messaging.
 - `automated-notifications` — the keepalive cron job here is one instance of the general no_agent polling pattern documented in that skill.
